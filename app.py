@@ -14,7 +14,7 @@ st.set_page_config(
 
 aplicar_tema()
 st.markdown("<style>.jaum-header img { height: 60px !important; }</style>", unsafe_allow_html=True)
-page_header("Painel Analítico de Cultivares de Milho", "JAUM DTC · Stine Seed")
+page_header("Painel Analítico de Híbridos de Milho", "JAUM DTC · Stine Seed")
 
 # ── Assinatura em destaque (logo abaixo do título) ───────────────────────────
 st.markdown("""
