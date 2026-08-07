@@ -43,7 +43,7 @@ with col_esq:
     st.markdown("""
 <div style="margin-top: 1rem;">
     <p style="font-size:15px; color:#1A1A1A; line-height:1.8;">
-        Painel multissafra de análise de cultivares de milho do programa
+        Painel multissafra de análise de híbridos de milho do programa
         <strong>JAUM DTC</strong> — produtividade, sanidade, caracterização
         agronômica e efeito de densidade de plantio.
     </p>
@@ -84,8 +84,8 @@ PAGINAS = [
     {
         "icone": "📊",
         "titulo": "Análise Conjunta",
-        "subtitulo": "Produtividade por cultivar (Faixa)",
-        "descricao": "Compare produtividade (kg/ha e sacas) entre cultivares no ensaio de Faixa, "
+        "subtitulo": "Produtividade por híbrido(Faixa)",
+        "descricao": "Compare produtividade (kg/ha e sacas) entre híbridos no ensaio de Faixa, "
                      "por safra e região, com ranking geral e recorte multissafra.",
         "tags": ["kg/ha", "sacas", "Ranking", "Faixa"],
     },
@@ -93,7 +93,7 @@ PAGINAS = [
         "icone": "⚔️",
         "titulo": "Head-to-Head",
         "subtitulo": "Confronto direto entre materiais",
-        "descricao": "Classificação de um cultivar versus os adversários local a local — vitórias, "
+        "descricao": "Classificação de um híbrido versus os adversários local a local — vitórias, "
                      "empates e derrotas em produtividade, com visão por fazenda e região.",
         "tags": ["H2H", "Vitórias", "Confronto", "Local"],
     },
@@ -101,7 +101,7 @@ PAGINAS = [
         "icone": "🦠",
         "titulo": "Doenças",
         "subtitulo": "Sanidade da av2",
-        "descricao": "Reação dos cultivares às principais doenças do milho — turcicum, cercospora, "
+        "descricao": "Reação dos híbridos às principais doenças do milho — turcicum, cercospora, "
                      "mancha branca, bipolaris, ferrugem tropical e enfezamento — com classificação AS a R.",
         "tags": ["Doenças", "Incidência", "Classificação", "AS–R"],
     },
@@ -110,7 +110,7 @@ PAGINAS = [
         "titulo": "Caracterização",
         "subtitulo": "Arquitetura de planta (av3)",
         "descricao": "Perfil agronômico: altura de planta e de espiga, dias até o florescimento "
-                     "masculino e feminino, e sincronismo — por cultivar, safra e região.",
+                     "masculino e feminino, e sincronismo — por híbrido, safra e região.",
         "tags": ["Altura", "Florescimento", "Arquitetura"],
     },
     {
@@ -125,7 +125,7 @@ PAGINAS = [
         "icone": "🗺️",
         "titulo": "Mapa",
         "subtitulo": "Desempenho por região",
-        "descricao": "Produtividade média dos cultivares por estado, macro e microrregião de milho. "
+        "descricao": "Produtividade média dos híbridos por estado, macro e microrregião de milho. "
                      "Identifique onde cada material se destaca geograficamente.",
         "tags": ["Mapa", "Estado", "Macro", "Micro"],
     },
