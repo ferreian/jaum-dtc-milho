@@ -1,0 +1,21 @@
+# Dependências de topo do painel de milho, alinhadas com o painel de soja
+# (mesma base que funciona com streamlit-aggrid). Transitivas resolvidas pelo pip.
+
+# App / UI
+streamlit==1.55.0
+streamlit-aggrid==1.2.1.post2
+plotly==6.6.0
+
+# Mapas (H2H por local e página de Mapa)
+folium==0.20.0
+streamlit-folium==0.27.1
+
+# Dados / ciência
+pandas==2.3.3
+numpy==2.4.4
+scipy==1.17.1
+openpyxl==3.1.5
+
+# Backend
+supabase==2.28.3
+python-dotenv==1.2.2
