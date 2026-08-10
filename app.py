@@ -14,7 +14,7 @@ st.set_page_config(
 
 aplicar_tema()
 st.markdown("<style>.jaum-header img { height: 60px !important; }</style>", unsafe_allow_html=True)
-page_header("Painel Analítico de Híbridos de Milho", "JAUM DTC · Stine Seed")
+page_header("Painel Analítico de Cultivares de Milho", "JAUM DTC · Stine Seed")
 
 # ── Assinatura em destaque (logo abaixo do título) ───────────────────────────
 st.markdown("""
@@ -43,9 +43,9 @@ with col_esq:
     st.markdown("""
 <div style="margin-top: 1rem;">
     <p style="font-size:15px; color:#1A1A1A; line-height:1.8;">
-        Painel multissafra de análise de híbridos de milho do programa
-        <strong>JAUM DTC</strong> — produtividade, sanidade, caracterização
-        agronômica e efeito de densidade de plantio.
+        Painel multissafra de análise de cultivares de milho do programa
+        <strong>JAUM DTC</strong> — produtividade, sanidade, perdas de colheita
+        e efeito da população de plantas.
     </p>
     <p style="font-size:13px; color:#6B7280; line-height:1.6; margin-top: 0.5rem;">
         &#127463;&#127479; Departamento Técnico de Culturas · Stine Brasil
@@ -84,8 +84,8 @@ PAGINAS = [
     {
         "icone": "📊",
         "titulo": "Análise Conjunta",
-        "subtitulo": "Produtividade por híbrido(Faixa)",
-        "descricao": "Compare produtividade (kg/ha e sacas) entre híbridos no ensaio de Faixa, "
+        "subtitulo": "Produtividade por cultivar (Faixa)",
+        "descricao": "Compare produtividade (kg/ha e sacas) entre cultivares no ensaio de Faixa, "
                      "por safra e região, com ranking geral e recorte multissafra.",
         "tags": ["kg/ha", "sacas", "Ranking", "Faixa"],
     },
@@ -93,41 +93,49 @@ PAGINAS = [
         "icone": "⚔️",
         "titulo": "Head-to-Head",
         "subtitulo": "Confronto direto entre materiais",
-        "descricao": "Classificação de um híbrido versus os adversários local a local — vitórias, "
+        "descricao": "Classificação de um cultivar versus os adversários local a local — vitórias, "
                      "empates e derrotas em produtividade, com visão por fazenda e região.",
         "tags": ["H2H", "Vitórias", "Confronto", "Local"],
     },
     {
         "icone": "🦠",
-        "titulo": "Doenças",
-        "subtitulo": "Sanidade da av2",
-        "descricao": "Reação dos híbridos às principais doenças do milho — turcicum, cercospora, "
+        "titulo": "Sanidade",
+        "subtitulo": "Reação a doenças (av2)",
+        "descricao": "Reação dos cultivares às principais doenças do milho — turcicum, cercospora, "
                      "mancha branca, bipolaris, ferrugem tropical e enfezamento — com classificação AS a R.",
         "tags": ["Doenças", "Incidência", "Classificação", "AS–R"],
     },
     {
-        "icone": "🌽",
-        "titulo": "Caracterização",
-        "subtitulo": "Arquitetura de planta (av3)",
-        "descricao": "Perfil agronômico: altura de planta e de espiga, dias até o florescimento "
-                     "masculino e feminino, e sincronismo — por híbrido, safra e região.",
-        "tags": ["Altura", "Florescimento", "Arquitetura"],
+        "icone": "🍂",
+        "titulo": "Perdas",
+        "subtitulo": "Tombo, podridão e fenômenos",
+        "descricao": "Acamamento, quebramento, dominadas e colmo podre na colheita, além dos "
+                     "fenômenos de estande e do grão ardido — por cultivar, safra e região.",
+        "tags": ["Acamamento", "Quebramento", "Colmo podre", "Fenômenos"],
     },
     {
         "icone": "🌱",
-        "titulo": "Análise de Densidade",
+        "titulo": "Densidade",
         "subtitulo": "Efeito da população de plantas",
-        "descricao": "Como a densidade de plantio afeta a produtividade: resposta do material às "
-                     "populações do ensaio de Densidade, com curvas e distribuição.",
-        "tags": ["Densidade", "População", "Resposta"],
+        "descricao": "Como a população afeta a produtividade e os componentes: grupos por estande "
+                     "real, curva de resposta com população ótima, sanidade e perdas por densidade.",
+        "tags": ["População", "Curva de resposta", "Componentes"],
     },
     {
         "icone": "🗺️",
         "titulo": "Mapa",
         "subtitulo": "Desempenho por região",
-        "descricao": "Produtividade média dos híbridos por estado, macro e microrregião de milho. "
+        "descricao": "Produtividade média dos cultivares por estado, macro e microrregião de milho. "
                      "Identifique onde cada material se destaca geograficamente.",
         "tags": ["Mapa", "Estado", "Macro", "Micro"],
+    },
+    {
+        "icone": "📷",
+        "titulo": "Fotos e Comentários",
+        "subtitulo": "Registros de campo",
+        "descricao": "Fotos e observações registradas pelos responsáveis DTC em cada avaliação, "
+                     "filtradas por safra, local, híbrido e responsável.",
+        "tags": ["Fotos", "Campo", "Comentários", "av1–av4"],
     },
 ]
 
