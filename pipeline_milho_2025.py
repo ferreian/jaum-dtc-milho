@@ -127,13 +127,29 @@ def uuids_teste_do_depara(df_users_banco):
 @st.cache_data
 def carregar_depara_materiais_2025():
     """De-para de materiais da safra 2025: nome (cru) -> dePara (canônico) -> status.
-    É o primeiro elo (nome->canônico da safra). O depara_mestre reconcilia entre safras."""
+    É o primeiro elo (nome->canônico da safra). O depara_mestre reconcilia entre safras.
+
+    Duas colunas OPCIONAIS sustentam materiais que compartilham o mesmo nome no banco:
+      - `indexTratamento`: preenchido SÓ nas exceções. Vazio = casa por nome (regra geral,
+        que é o caso de 42 dos 43 materiais de 2025).
+      - `tratamento_semente`: 'padrao' na maioria; identifica o tratamento industrial
+        ('victrato'), permitindo a análise pareada do mesmo genótipo com e sem tratamento.
+    O `usecols` por lambda tolera um CSV que ainda não tenha as colunas — assim as duas
+    safras podem migrar em momentos diferentes sem quebrar. A coluna `n_tratamentos` do
+    CSV é informativa (conferência do de-para) e continua fora do pipeline.
+    """
     path = CONFIG_DIR / "depara_materiais_2025.csv"
-    dep = pd.read_csv(path, usecols=["nome", "dePara", "status_material"])
+    _cols = ["nome", "dePara", "status_material", "indexTratamento", "tratamento_semente"]
+    dep = pd.read_csv(path, usecols=lambda c: c in _cols)
     dep["nome"] = dep["nome"].astype(str).str.strip()
-    for col in ["dePara", "status_material"]:
-        dep[col] = dep[col].astype(str).str.strip().replace(
-            {"": np.nan, "nan": np.nan, "None": np.nan})
+    for col in ["dePara", "status_material", "tratamento_semente"]:
+        if col in dep.columns:
+            dep[col] = dep[col].astype(str).str.strip().replace(
+                {"": np.nan, "nan": np.nan, "None": np.nan})
+    if "indexTratamento" not in dep.columns:
+        dep["indexTratamento"] = np.nan
+    # numérico: o índice vem do banco como número e o CSV pode trazer vazio/texto
+    dep["indexTratamento"] = pd.to_numeric(dep["indexTratamento"], errors="coerce")
     return dep
 
 
@@ -289,8 +305,8 @@ def _enriquecer_detalhe_fotos(df_det, avs_enriquecidas, df_fazenda=None):
     """
     _COLS_CTX = ["cod_fazenda", "nomeFazenda", "cidade_nome", "estado_sigla",
                  "regiao_macro", "regiao_micro", "safra", "epoca", "nomeResponsavel",
-                 "nome", "dePara", "status_material", "tipoTeste", "indexTratamento",
-                 "pop_tratamento"]
+                 "nome", "dePara", "status_material", "tratamento_semente",
+                 "tipoTeste", "indexTratamento", "pop_tratamento"]
 
     _lk = []
     for _av, _tb in (avs_enriquecidas or {}).items():
@@ -402,13 +418,63 @@ def _enriquecer_fazenda(df_fazenda, df_cidade, df_estado, safra="25/26"):
 
 def _enriquecer_tratamento(df_tb, dep_materiais=None):
     """Join do tratamentoBase com o de-para de materiais da safra (nome -> dePara -> status).
-    `dep_materiais`: DataFrame do de-para; se None, usa o de 2025 (retrocompat)."""
+    `dep_materiais`: DataFrame do de-para; se None, usa o de 2025 (retrocompat).
+
+    DUAS CAMADAS DE CASAMENTO:
+      1. REGRA GERAL — por `nome`. Vale para as linhas do de-para com `indexTratamento` vazio,
+         que é a maioria (42 dos 43 materiais de 2025).
+      2. EXCEÇÕES — linhas com `indexTratamento` preenchido casam por nome + índice e
+         SOBRESCREVEM a camada 1.
+
+    A camada 2 existe porque o 9505PRO4 VICTRATO tem o MESMO nome do 9505PRO4 padrão no banco:
+    o que os separa é `indexTratamento = 26`. Sem ela os dois viram um único material e, como o
+    Victrato rende menos (10,4 sc/ha em 32 locais pareados, p = 0,0003, com população real ~4.500
+    plantas/ha menor), a média do padrão sai contaminada — em MT, 142,6 em vez de 149,1.
+
+    POR QUE NÃO trocar a chave para nome + índice: doze materiais têm dois números de tratamento
+    apenas porque a numeração varia por ensaio (AS1868PRO4 10/11, SYD8124ZL 16/17, DKB360PRO3
+    13/14, e outros nove) — nunca no mesmo local, e NÃO são materiais distintos. Com chave
+    composta cada um precisaria de duas linhas no CSV e qualquer índice novo deixaria o material
+    sem de-para. Aqui, índice desconhecido continua casando pela regra geral.
+
+    O casamento acontece no tratamentoBase (que já traz `indexTratamento` da fonte), então tudo
+    a jusante — av1..av4, base_plots, analíticas, detalhe, fotos — herda pelo `idBaseRef`.
+    """
     dep = dep_materiais if dep_materiais is not None else carregar_depara_materiais_2025()
     df = df_tb.copy()
     if "pop" in df.columns and "pop_tratamento" not in df.columns:
         df = df.rename(columns={"pop": "pop_tratamento"})   # população-alvo do tratamento (Densidade)
     df["nome"] = df["nome"].astype(str).str.strip()
-    return df.merge(dep, on="nome", how="left")
+
+    if "indexTratamento" not in dep.columns:      # de-para antigo: só a regra geral existe
+        return df.merge(dep, on="nome", how="left")
+
+    _cols_sobrescreve = [c for c in ["dePara", "status_material", "tratamento_semente"]
+                         if c in dep.columns]
+    _geral = dep[dep["indexTratamento"].isna()].drop(columns=["indexTratamento"])
+    _exc = (dep[dep["indexTratamento"].notna()]
+            .rename(columns={"indexTratamento": "_idx",
+                             **{c: f"_{c}_exc" for c in _cols_sobrescreve}}))
+
+    # CUIDADO: o merge tem de usar SÓ `_geral`. Passar o de-para inteiro por `nome` duplicaria
+    # a linha de todo material com exceção (o nome aparece duas vezes no CSV) — fan-out silencioso
+    # que multiplicaria parcelas rede afora. Sem índice no tratamentoBase não há como desempatar,
+    # então a exceção não é aplicada e o aviso sai no log em vez de virar dado errado.
+    if _exc.empty or "indexTratamento" not in df.columns:
+        if not _exc.empty:
+            print(f"[de-para materiais] {len(_exc)} exceção(ões) por indexTratamento não "
+                  f"aplicada(s): o tratamentoBase não trouxe a coluna `indexTratamento`.")
+        return df.merge(_geral, on="nome", how="left")
+
+    out = df.merge(_geral, on="nome", how="left")
+    out["_idx"] = pd.to_numeric(out["indexTratamento"], errors="coerce")
+    out = out.merge(_exc[["nome", "_idx"] + [f"_{c}_exc" for c in _cols_sobrescreve]],
+                    on=["nome", "_idx"], how="left")
+
+    _casou = out["_dePara_exc"].notna()
+    for c in _cols_sobrescreve:
+        out.loc[_casou, c] = out.loc[_casou, f"_{c}_exc"]
+    return out.drop(columns=["_idx"] + [f"_{c}_exc" for c in _cols_sobrescreve])
 
 
 def _fazer_enriquecer_av(df_fazenda, df_users, df_avaliacao, df_tb):
@@ -431,6 +497,10 @@ def _fazer_enriquecer_av(df_fazenda, df_users, df_avaliacao, df_tb):
         # inclui a população-alvo do tratamento (pop -> pop_tratamento): é o que define o ensaio
         # de Densidade (planejado). Diferente de populacao_real_plantas_ha (contada no campo, av4).
         _cols_tb = ["uuid", "dePara", "status_material", "regional"]
+        # tratamento industrial de semente ('padrao'/'victrato'): vem do de-para da safra e
+        # precisa viajar junto, senão a análise pareada não existe fora do tratamentoBase
+        if "tratamento_semente" in df_tb.columns:
+            _cols_tb.append("tratamento_semente")
         _ren_tb = {"uuid": "idBaseRef"}
         if "pop_tratamento" in df_tb.columns:
             _cols_tb.append("pop_tratamento")
@@ -446,7 +516,7 @@ def _fazer_enriquecer_av(df_fazenda, df_users, df_avaliacao, df_tb):
             "cod_fazenda", "nomeFazenda", "cidade_nome", "estado_sigla",
             "regiao_macro", "regiao_micro", "regional", "safra", "epoca",
             "dataPlantioMilho", "dataColheitaMilho", "latitude", "longitude", "altitude",
-            "nomeResponsavel", "nome", "dePara", "status_material",
+            "nomeResponsavel", "nome", "dePara", "status_material", "tratamento_semente",
             "tipoTeste", "indexTratamento", "pop_tratamento",
         ]
         cols_contexto = [c for c in cols_contexto if c in df.columns]
@@ -922,7 +992,7 @@ def _gold_av4(tb_av4: pd.DataFrame) -> tuple:
 CHAVE = ["fazendaRef", "idBaseRef", "tipoTeste", "indexTratamento"]
 CONTEXTO = ["cod_fazenda", "nomeFazenda", "nomeProdutor", "cidade_nome", "estado_sigla",
             "regiao_macro", "regiao_micro", "safra", "epoca", "nome", "dePara",
-            "status_material", "pop_tratamento", "nomeResponsavel",
+            "status_material", "tratamento_semente", "pop_tratamento", "nomeResponsavel",
             "dataPlantioMilho", "dataColheitaMilho", "latitude", "longitude"]
 
 # Métricas por avaliação levadas às analíticas (nomes canônicos de 2025).
@@ -947,7 +1017,8 @@ MET_AV4 = ["produtividade_valida_kg_ha", "produtividade_valida_sacas_ha",
 COLS_DETALHE = ["uuid", "fazendaRef", "idBaseRef", "tipoTeste", "indexTratamento",
                 "cod_fazenda", "nomeFazenda", "cidade_nome", "estado_sigla",
                 "regiao_macro", "regiao_micro", "safra", "epoca",
-                "nome", "dePara", "status_material", "pop_tratamento", "nomeResponsavel",
+                "nome", "dePara", "status_material", "tratamento_semente",
+                "pop_tratamento", "nomeResponsavel",
                 "planta", "metrica", "valor"]
 
 

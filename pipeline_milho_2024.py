@@ -49,13 +49,25 @@ def get_supabase_2024():
 # ── De-para de materiais 2024 (elo nome cru -> canônico da safra 24/25) ────────
 @st.cache_data
 def carregar_depara_materiais_2024():
-    """De-para de materiais da safra 2024: nome (cru) -> dePara (canônico) -> status."""
+    """De-para de materiais da safra 2024: nome (cru) -> dePara (canônico) -> status.
+
+    Mesmo contrato do de-para 2025: `indexTratamento` marca EXCEÇÕES (materiais que dividem o
+    nome no banco e só se distinguem pelo tratamento) e `tratamento_semente` guarda o tratamento
+    industrial. O casamento em duas camadas vive no `_enriquecer_tratamento` do núcleo, então
+    aqui basta ler as colunas. Em 2024 elas estão vazias/'padrao' até se confirmar se o
+    9505VTPRO4 também tinha dois tratamentos no mesmo local.
+    """
     path = CONFIG_DIR / "depara_materiais_2024.csv"
-    dep = pd.read_csv(path, usecols=["nome", "dePara", "status_material"])
+    _cols = ["nome", "dePara", "status_material", "indexTratamento", "tratamento_semente"]
+    dep = pd.read_csv(path, usecols=lambda c: c in _cols)
     dep["nome"] = dep["nome"].astype(str).str.strip()
-    for col in ["dePara", "status_material"]:
-        dep[col] = dep[col].astype(str).str.strip().replace(
-            {"": np.nan, "nan": np.nan, "None": np.nan})
+    for col in ["dePara", "status_material", "tratamento_semente"]:
+        if col in dep.columns:
+            dep[col] = dep[col].astype(str).str.strip().replace(
+                {"": np.nan, "nan": np.nan, "None": np.nan})
+    if "indexTratamento" not in dep.columns:
+        dep["indexTratamento"] = np.nan
+    dep["indexTratamento"] = pd.to_numeric(dep["indexTratamento"], errors="coerce")
     return dep
 
 
