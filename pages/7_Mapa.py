@@ -1033,8 +1033,33 @@ def _mapa_regiao(col_grupo, label_nivel, fator_cor=1.0):
                        .dropna(subset=["lat", "lon"]))
             _df_lbl = _df_lbl[_df_lbl["n"] >= _N_MIN_REGIAO]
             _df_lbl = _df_lbl.sort_values(col_val, ascending=False)
-            _manter = set(_df_lbl["regiao"].head(_MAX_LABELS)) | {_melhor_reg}
-            _df_lbl = _df_lbl[_df_lbl["regiao"].isin(_manter)]
+
+            # Limitar a quantidade não basta: no Centro-Oeste as microrregiões são vizinhas e
+            # os centroides caem a poucos graus um do outro, então três rótulos válidos ainda
+            # se sobrepõem. Aqui entra a distância mínima: percorre do maior valor para o menor
+            # e só aceita um rótulo se ele estiver longe o bastante de todos os já aceitos.
+            # Em área dispersa isso não tira nada; em área densa tira o suficiente para ler.
+            # A melhor região entra sempre, e é a âncora — os outros cedem lugar a ela.
+            _DIST_MIN_GRAUS = 4.5
+
+            _aceitos = []
+            _linha_melhor = _df_lbl[_df_lbl["regiao"] == _melhor_reg]
+            if not _linha_melhor.empty:
+                _aceitos.append(_linha_melhor.iloc[0])
+
+            for _, _cand in _df_lbl.iterrows():
+                if len(_aceitos) >= _MAX_LABELS:
+                    break
+                if any(_cand["regiao"] == _a["regiao"] for _a in _aceitos):
+                    continue
+                _longe = all(
+                    ((_cand["lat"] - _a["lat"]) ** 2 + (_cand["lon"] - _a["lon"]) ** 2) ** 0.5
+                    >= _DIST_MIN_GRAUS for _a in _aceitos)
+                if _longe:
+                    _aceitos.append(_cand)
+
+            _df_lbl = (pd.DataFrame(_aceitos) if _aceitos
+                       else _df_lbl.iloc[0:0])
 
             for _, _row in _df_lbl.iterrows():
                 _abr = str(_row["regiao"]).replace("MACRO ", "M ").replace("REC ", "")
@@ -1066,8 +1091,9 @@ def _mapa_regiao(col_grupo, label_nivel, fator_cor=1.0):
             if _ocultas > 0:
                 _fig.add_annotation(
                     x=0.01, y=0.01, xref="paper", yref="paper", xanchor="left",
-                    text=f"<i>{_ocultas} região(ões) sem rótulo — passe o mouse ou "
-                         f"veja o gráfico abaixo</i>",
+                    text=f"<i>{_ocultas} região(ões) sem rótulo, por proximidade ou por terem "
+                         f"menos de {_N_MIN_REGIAO} parcelas — passe o mouse ou veja o "
+                         f"gráfico abaixo</i>",
                     showarrow=False, font=dict(size=11, color="#6B7280"))
 
         # legenda
