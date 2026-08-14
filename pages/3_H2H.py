@@ -4,10 +4,13 @@ pages/3_H2H.py — Head-to-Head · JAUM DTC Milho
 Confronto direto entre híbridos, calculado apenas nos locais onde ambos foram
 avaliados simultaneamente.
 
-Abas:
-  · Tab 1 — Tabela de Classificação: Produto 1 vs todos os adversários
-  · Tab 2 — Análise por Local: par específico, cards + donut + mapa + barras
-  · Tab 3 — Desvios por Ambiente (a construir)
+Abas, na ordem em que aparecem:
+  · Locais — caracterização do ambiente de cada local; monta o recorte
+  · Tabela de Classificação — um Produto 1 contra todos os adversários
+  · Análise por Local — par específico, cards + donut + mapa + barras
+  · Desvios por Ambiente — reta de desvio vs. média do local, com b, R² e teste t
+  · Todos os Materiais — a linha inteira de uma vez, em quatro leituras:
+      placar consolidado · matriz material × adversário · por ambiente · local a local
 
 Fonte: tabela_analitica_faixa das safras 2024/25 e 2025/26 (só Faixa; Densidade
 tem página própria).
@@ -24,6 +27,9 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 from utils.theme import aplicar_tema, page_header, secao_titulo, rodape
 from utils.loader import carregar_multisafra
+from utils.tabelas import (cel, cel_resumo, hdr, tabela_html, tabela_excel,
+                           render_tabela as _render_tabela, legenda_cores, MIME_XLSX,
+                           BG_RESUMO, FG_RESUMO)
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 
 st.set_page_config(
@@ -46,6 +52,11 @@ st.markdown("""
 # Constantes
 # ─────────────────────────────────────────────────────────────────────────────
 STATUS_P1 = ["STINE", "EXP", "DP2"]     # pool de "Produto 1" (materiais Stine)
+# Universo de adversários das abas agregadas (Locais e Todos os Materiais): só os
+# comerciais. É a mesma régua do racional de posicionamento — quem disputa mercado
+# com a linha são os CHECK. Fixo de propósito: assim o aproveitamento dessas abas
+# não muda conforme o filtro lateral e é reprodutível entre sessões.
+STATUS_ADVERSARIO = ("CHECK",)
 EMPATE_MARGEM = 1.0                      # ± sc/ha: dentro disso é empate técnico
 SAFRA_PADRAO = ("25/26", "2025/26")      # aceita os dois formatos de rótulo
 
@@ -74,7 +85,7 @@ COR_STATUS_TITULO = {"CHECK": "#F4B184", "STINE": "#2976B6",
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper Excel — mesma paleta da classificação
 # ─────────────────────────────────────────────────────────────────────────────
-def to_excel(df: pd.DataFrame) -> bytes:
+def to_excel(df: pd.DataFrame, cols_pct=None) -> bytes:
     buf = io.BytesIO()
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -119,6 +130,10 @@ def to_excel(df: pd.DataFrame) -> bytes:
                 c.font = Font(name="Arial", size=10, color="1A1A1A")
                 c.fill = PatternFill("solid", start_color="FFFFFF")
             c.alignment = Alignment(horizontal="left" if ci == 1 else "center", vertical="center")
+            # percentual: valor continua numérico (dá para ordenar e pivotar), o
+            # símbolo entra pelo formato — igual ao que aparece na tela
+            if cols_pct and df.columns[ci - 1] in cols_pct and isinstance(val, (int, float)):
+                c.number_format = '0.0"%"'
             c.border = brd
 
     wb.save(buf)
@@ -336,6 +351,7 @@ if ta_filtrado.empty:
     st.warning("Nenhum dado para os filtros selecionados.")
     st.stop()
 
+
 df_p1 = ta_filtrado[ta_filtrado["status_material"].isin(STATUS_P1)].copy()
 df_p2 = (ta_filtrado[ta_filtrado["status_material"].isin(status_p2_sel)].copy()
          if status_p2_sel else pd.DataFrame())
@@ -357,6 +373,150 @@ def cruzar_por_local(df1: pd.DataFrame, df2: pd.DataFrame) -> pd.DataFrame:
     d2 = d2.groupby(["dePara", "status_material", "cod_fazenda"], as_index=False)[["sc_ha", "kg_ha"]].mean()
     merged = d1.merge(d2, on="cod_fazenda", suffixes=("_1", "_2"))
     return merged[merged["dePara_1"] != merged["dePara_2"]].reset_index(drop=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Caracterização de locais — ambiente + placar da linha por local
+# ─────────────────────────────────────────────────────────────────────────────
+# Data de plantio. O nome canônico vem do pipeline: `dataPlantioMilho`, da tabela
+# fazenda, propagado em CONTEXTO até as analíticas. Os demais nomes ficam como
+# retrocompatibilidade, e a busca por conteúdo cobre o caso de o nome mudar.
+COLS_PLANTIO = ["dataPlantioMilho", "data_plantio", "dataPlantio", "dt_plantio",
+                "data_semeadura", "dataSemeadura", "plantio"]
+
+
+def _parece_data(s: pd.Series) -> bool:
+    """Metade dos valores não nulos precisa virar data plausível de safra."""
+    v = s.dropna()
+    if v.empty:
+        return False
+    d = pd.to_datetime(v, errors="coerce", dayfirst=True)
+    if d.notna().mean() < 0.5:
+        return False
+    anos = d.dropna().dt.year
+    return bool(len(anos)) and anos.between(2015, 2035).mean() > 0.8
+
+
+def _col_plantio(df: pd.DataFrame):
+    """1) nomes conhecidos · 2) qualquer coluna cujo nome cite plantio/semeadura e
+    cujo conteúdo seja data · 3) desiste."""
+    for c in COLS_PLANTIO:
+        if c in df.columns and _parece_data(df[c]):
+            return c
+    for c in df.columns:
+        n = str(c).lower()
+        if ("plant" in n or "semea" in n or "semei" in n) and _parece_data(df[c]):
+            return c
+    return None
+
+
+def candidatas_data(df: pd.DataFrame):
+    """Colunas que parecem data — usado no diagnóstico quando nada é encontrado."""
+    return [c for c in df.columns if _parece_data(df[c])]
+
+
+@st.cache_data(show_spinner=False)
+def caracterizar_locais(df_base: pd.DataFrame, status_linha: tuple, status_adv: tuple) -> pd.DataFrame:
+    """Uma linha por local. Duas famílias de coluna:
+
+    AMBIENTE (média, amplitude, nº de materiais) — calculado sobre a base INTEIRA,
+    com todos os híbridos avaliados ali, inclusive os fora do filtro. Assim a
+    caracterização do local não muda conforme a seleção, mesmo princípio da Tab 3.
+
+    PLACAR (confrontos, vitórias, aproveitamento, diferença média) — todos os
+    duelos linha × adversário naquele local, com a mesma margem de empate do resto
+    da página.
+    """
+    d = df_base.dropna(subset=["sc_ha"]).copy()
+    if d.empty:
+        return pd.DataFrame()
+
+    # média por (material, local): mesma agregação de cruzar_por_local
+    med = d.groupby(["dePara", "status_material", "cod_fazenda"], as_index=False)["sc_ha"].mean()
+
+    # --- ambiente ---
+    amb = med.groupby("cod_fazenda").agg(
+        _n_mat=("dePara", "nunique"),
+        _melhor=("sc_ha", "max"),
+        _pior=("sc_ha", "min"),
+    )
+    # média do local pela parcela (mesma definição do Panorama), não pela média das médias
+    amb["_media"] = d.groupby("cod_fazenda")["sc_ha"].mean()
+    amb["_amplitude"] = amb["_melhor"] - amb["_pior"]
+
+    # --- placar da linha ---
+    d1 = med[med["status_material"].isin(status_linha)]
+    d2 = med[med["status_material"].isin(status_adv)]
+    if d1.empty or d2.empty:
+        duelos = pd.DataFrame(columns=["cod_fazenda", "_conf", "_vit", "_emp", "_der", "_dif"])
+    else:
+        m = d1.merge(d2, on="cod_fazenda", suffixes=("_1", "_2"))
+        m = m[m["dePara_1"] != m["dePara_2"]].copy()
+        m["_d"] = m["sc_ha_1"] - m["sc_ha_2"]
+        duelos = m.groupby("cod_fazenda").apply(
+            lambda g: pd.Series({
+                "_conf": len(g),
+                "_vit": int((g["_d"] > EMPATE_MARGEM).sum()),
+                "_emp": int((g["_d"].abs() <= EMPATE_MARGEM).sum()),
+                "_der": int((g["_d"] < -EMPATE_MARGEM).sum()),
+                "_dif": g["_d"].mean(),
+            }),
+            include_groups=False,
+        ).reset_index()
+
+    out = amb.reset_index().merge(duelos, on="cod_fazenda", how="left")
+    out["_aprov"] = np.where(out["_conf"].fillna(0) > 0, out["_vit"] / out["_conf"] * 100, np.nan)
+    return out
+
+
+def _rotulo_tercil(s: pd.Series) -> pd.Series:
+    """Tercil calculado SOBRE O RECORTE ATIVO — responde 'difícil dentro do que
+    está na tela', não 'difícil na rede'. Com menos de 6 locais não classifica:
+    tercil de 4 valores é rótulo sem conteúdo."""
+    if s.notna().sum() < 6:
+        return pd.Series(["—"] * len(s), index=s.index)
+    try:
+        return pd.qcut(s, 3, labels=["Baixa", "Média", "Alta"]).astype(str)
+    except ValueError:
+        return pd.Series(["—"] * len(s), index=s.index)
+
+
+@st.cache_data(show_spinner=False)
+def cruzar_linha(df_base: pd.DataFrame, status_linha: tuple, status_adv: tuple) -> pd.DataFrame:
+    """Todos os duelos linha × adversário, um por (material, adversário, local).
+
+    Uma única passagem produz as quatro tabelas do panorama: basta filtrar os
+    locais e agrupar de formas diferentes. Não depende de botão.
+    """
+    d = df_base.dropna(subset=["sc_ha"])
+    med = d.groupby(["dePara", "status_material", "cod_fazenda"], as_index=False)["sc_ha"].mean()
+    d1 = med[med["status_material"].isin(status_linha)]
+    d2 = med[med["status_material"].isin(status_adv)]
+    if d1.empty or d2.empty:
+        return pd.DataFrame(columns=["material", "adversario", "cod_fazenda", "dif", "res"])
+    m = d1.merge(d2, on="cod_fazenda", suffixes=("_1", "_2"))
+    m = m[m["dePara_1"] != m["dePara_2"]].copy()
+    m["dif"] = m["sc_ha_1"] - m["sc_ha_2"]
+    m["res"] = np.select([m["dif"] > EMPATE_MARGEM, m["dif"] < -EMPATE_MARGEM],
+                         ["V", "D"], default="E")
+    return m.rename(columns={"dePara_1": "material", "dePara_2": "adversario"})[
+        ["material", "adversario", "cod_fazenda", "dif", "res"]]
+
+
+def agregar_placar(d: pd.DataFrame, por) -> pd.DataFrame:
+    """V/E/D, confrontos, aproveitamento e diferença média por chave."""
+    if d.empty:
+        return pd.DataFrame()
+    g = d.groupby(por)
+    out = pd.DataFrame({
+        "Confrontos": g.size(),
+        "V": g["res"].apply(lambda s: int((s == "V").sum())),
+        "E": g["res"].apply(lambda s: int((s == "E").sum())),
+        "D": g["res"].apply(lambda s: int((s == "D").sum())),
+        "Dif": g["dif"].mean(),
+    })
+    out["Aprov"] = out["V"] / out["Confrontos"] * 100
+    return out.reset_index()
 
 
 def linha_safra(s, g, sufixo_locais="locais"):
@@ -381,7 +541,286 @@ def montar_contexto(base, sufixo_locais="locais"):
     return "<br>".join(linhas)
 
 
-tab1, tab2, tab3 = st.tabs(["Tabela de Classificação", "Análise por Local", "Desvios por Ambiente"])
+MIME_XLSX = ("application/vnd.openxmlformats-officedocument"
+             ".spreadsheetml.sheet")
+
+
+def render_tabela(headers, linhas, nome_arquivo, key, **kw):
+    """Wrapper: injeta o sufixo do recorte no nome do arquivo."""
+    return _render_tabela(headers, linhas, nome_arquivo, key,
+                          sufixo=sufixo_arquivo(), **kw)
+
+
+def sufixo_arquivo() -> str:
+    """Marca o recorte no nome do arquivo — sem isso, três exportações do mesmo
+    painel viram três arquivos indistinguíveis na pasta de Downloads."""
+    partes = []
+    try:
+        if 1 <= len(set(estados_sel)) <= 3:
+            partes.append("-".join(sorted(set(estados_sel))))
+    except (NameError, TypeError):
+        pass
+    try:
+        if len(set(safras_sel)) == 1:
+            partes.append(str(list(safras_sel)[0]).replace("/", ""))
+    except (NameError, TypeError):
+        pass
+    return ("_" + "_".join(partes)) if partes else ""
+
+
+def botao_exportar(df: pd.DataFrame, nome: str, key: str, label: str = "⬇️ Exportar Excel",
+                   cols_pct=None):
+    """Exporta a tabela como ela está na tela. Colunas técnicas (prefixo _) saem
+    no to_excel."""
+    if df is None or len(df) == 0:
+        return
+    # Int64/NA quebram o openpyxl ("Cannot convert <NA> to Excel"): vira None
+    df = df.astype(object).where(df.notna(), None)
+    st.download_button(label, data=to_excel(df, cols_pct=cols_pct),
+                       file_name=f"{nome}{sufixo_arquivo()}.xlsx",
+                       mime=MIME_XLSX, key=key)
+
+
+tab1, tab2, tab3, tab0, tabL = st.tabs(
+    ["Tabela de Classificação", "Análise por Local", "Desvios por Ambiente",
+     "Locais", "Todos os Materiais"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 0 — Locais
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab0:
+    secao_titulo(
+        "HEAD-TO-HEAD · LOCAIS",
+        "Os locais do recorte, do mais produtivo ao menos produtivo",
+        "Referência de ambiente para montar recortes. A cor destaca os extremos de "
+        "produtividade e os plantios mais tardios.",
+    )
+
+    st.markdown(
+        '<div style="background:#F7F7F7;border-left:5px solid #2976B6;border-radius:8px;'
+        'padding:12px 18px;margin:2px 0 14px;">'
+        '<p style="margin:0;font-size:15px;line-height:1.7;color:#1A1A1A;'
+        'font-family:\'Helvetica Neue\',Helvetica,Arial,sans-serif;">'
+        '<b>O fluxo:</b> &nbsp;<b>1.</b> filtre estado ou região na barra lateral &nbsp;·&nbsp; '
+        '<b>2.</b> leia a tabela abaixo e identifique os locais que interessam — os extremos de '
+        'produtividade e os plantios tardios já vêm destacados &nbsp;·&nbsp; '
+        '<b>3.</b> marque as fazendas deles no filtro <b>Fazenda</b> da barra lateral &nbsp;·&nbsp; '
+        '<b>4.</b> volte para qualquer aba: todas já estão respondendo só a esses locais.'
+        '<br><span style="color:#6B7280;">Esta tabela não filtra nada — ela mostra o que o filtro '
+        'lateral já selecionou. Quem estreita a análise é sempre a barra lateral, e ela vale para '
+        'as cinco abas.</span>'
+        '</p></div>', unsafe_allow_html=True)
+
+    _cp = _col_plantio(ta_filtrado)
+    _base_loc = ta_filtrado.dropna(subset=["sc_ha"])
+
+    if _base_loc.empty:
+        st.info("Nenhum local com os filtros atuais.")
+    else:
+        _cols = ["cod_fazenda", "nomeFazenda", "cidade_nome", "regiao_macro", "regiao_micro",
+                 "estado_sigla", "safra"]
+        if _cp:
+            _cols.append(_cp)
+        _meta = (ta_filtrado[[c for c in _cols if c in ta_filtrado.columns]]
+                 .drop_duplicates("cod_fazenda"))
+        _med = _base_loc.groupby("cod_fazenda")["sc_ha"].mean().round(1).rename("sc/ha")
+        _t = _meta.merge(_med, on="cod_fazenda", how="left").sort_values("sc/ha", ascending=False)
+
+        tab_loc = pd.DataFrame({
+            "Código": _t["cod_fazenda"].values,
+            "Fazenda": _t.get("nomeFazenda", pd.Series(dtype=object)).values,
+            "Cidade": _t.get("cidade_nome", pd.Series(dtype=object)).values,
+            "Macro": _t.get("regiao_macro", pd.Series(dtype=object)).values,
+            "Micro": _t.get("regiao_micro", pd.Series(dtype=object)).values,
+            "sc/ha": _t["sc/ha"].round(1).values,
+        })
+        if _cp:
+            _dt = pd.to_datetime(_t[_cp], errors="coerce")
+            tab_loc["Plantio"] = _dt.dt.strftime("%d/%m").values
+            _dias = (_dt - _dt.min()).dt.days.values
+        else:
+            _dias = np.full(len(tab_loc), np.nan)
+
+        mostrar_placar = st.toggle(
+            "Mostrar placar da linha e amplitude", value=False, key="loc_toggle_placar",
+            help="Acrescenta o quanto o local separa os materiais e o aproveitamento da "
+                 "linha Stine contra os concorrentes comerciais em cada local.",
+        )
+        _linha_status = ("STINE",)
+        _car = caracterizar_locais(ta_raw, _linha_status,
+                                   STATUS_ADVERSARIO).set_index("cod_fazenda")
+        if mostrar_placar:
+            tab_loc["Amplitude"] = tab_loc["Código"].map(_car["_amplitude"]).round(1)
+            tab_loc["Confrontos"] = tab_loc["Código"].map(_car["_conf"]).astype("Int64")
+            tab_loc["Aprov. %"] = tab_loc["Código"].map(_car["_aprov"]).round(1)
+            tab_loc["Dif. sc/ha"] = tab_loc["Código"].map(_car["_dif"]).round(1)
+
+        # ── faixa de cor por quintil dentro do recorte ativo ─────────────────
+        CORES_FAIXA = {"alto": "#1E7A34", "medio-alto": "#3E9E52", "neutro": "#1A1A1A",
+                       "medio-baixo": "#E06C00", "baixo": "#C0201E"}
+
+        def _faixa(v: pd.Series, invertido=False):
+            if v.notna().sum() < 5:
+                return pd.Series(["neutro"] * len(v), index=v.index)
+            q = v.rank(pct=True, ascending=not invertido)
+            return pd.Series(np.select(
+                [q >= 0.85, q >= 0.70, q <= 0.10, q <= 0.25],
+                ["alto", "medio-alto", "baixo", "medio-baixo"], default="neutro"
+            ), index=v.index)
+
+        _f_sc = _faixa(tab_loc["sc/ha"]).tolist()
+        _f_pl = (_faixa(pd.Series(_dias), invertido=True).tolist()
+                 if _cp else ["neutro"] * len(tab_loc))
+
+        _cpa, _cpb = st.columns([3, 1])
+        with _cpb:
+            with st.popover("ℹ️ Como entender esta tabela", use_container_width=True):
+                st.markdown("""
+**📌 A pergunta que esta tabela responde**
+
+> **Que ambientes compõem o recorte que estou olhando, e qual deles serve de base para
+> cada afirmação?**
+
+Ela não compara híbridos. Ela descreve os **locais** — para que marcar uma fazenda no filtro
+lateral seja uma decisão consciente, e não escolha por nome.
+
+> **Esta tabela não filtra nada.** Ela mostra os locais que o filtro lateral já selecionou. Quem
+estreita a análise é a barra lateral, e ela vale para as cinco abas ao mesmo tempo: Tabela de
+Classificação, Análise por Local, Desvios por Ambiente, esta e Todos os Materiais.
+
+---
+
+**📋 O que é cada coluna**
+
+| Coluna | O que é | Como é calculado |
+|---|---|---|
+| **Código** | chave do local (`cod_fazenda`), a mesma usada em todas as páginas | — |
+| **Fazenda · Cidade · Macro · Micro** | cadastro do local | vêm da base, sem cálculo |
+| **sc/ha** | quanto o ambiente rendeu | média de **todas as parcelas de todos os híbridos** avaliados ali, inclusive os fora do filtro de status. Descreve o ambiente, não a linha |
+| **Plantio** | data de semeadura do ensaio | `dataPlantioMilho`, da tabela fazenda. É do local, não do híbrido: todos os materiais daquela fazenda foram plantados no mesmo dia |
+| **Amplitude** *(toggle)* | o quanto o local separa os materiais | média por material no local, depois `melhor − pior`. É a medida de exigência, e é independente da média |
+| **Confrontos** *(toggle)* | quantos duelos a linha travou ali | `materiais STINE × concorrentes comerciais presentes no local` |
+| **Aprov. %** *(toggle)* | quanto a linha Stine venceu naquele local, contra os comerciais | `vitórias ÷ confrontos`, com vitória = diferença acima de +1,0 sc/ha |
+| **Dif. sc/ha** *(toggle)* | por quanto a linha ganha ou perde ali | média de `(material Stine − concorrente)` em todos os duelos do local |
+
+Cada linha é um **local**, nunca uma parcela e nunca um híbrido. As colunas do toggle usam
+sempre **STINE contra CHECK**, independentemente do filtro Status do Adversário da lateral.
+
+---
+
+**📐 Como ler as cores**
+
+- **Verde** → extremo superior de produtividade do recorte **em tela**. **Vermelho** → extremo
+  inferior. As faixas são relativas: um local verde em MG pode ser vermelho em MT.
+- **Plantio em vermelho** → os mais tardios do recorte.
+- **Código colorido** → repete o destaque da linha para achar o local rápido nos outros gráficos.
+
+> **Média baixa e amplitude alta não são a mesma coisa.** Um local pode render pouco e separar
+bem os materiais, render muito e separar bem, ou render muito e não separar nada. Só quando o
+local separa é que a diferença entre híbridos ali significa alguma coisa.
+
+---
+
+**🧭 Como usar — o exemplo**
+
+Suponha que você queira defender um material para plantio tardio.
+
+1. Filtre **Estado = MT** na barra lateral. A tabela mostra os locais do estado, do mais para o
+   menos produtivo.
+2. Olhe a coluna **Plantio**: os mais tardios do recorte saem em vermelho.
+3. Marque as **fazendas** desses locais no filtro Fazenda da lateral. As cinco abas passam a
+   responder só a eles.
+4. Vá a **Todos os Materiais** e compare o aproveitamento com o do recorte cheio. Se subir, o
+   argumento tem placar — não só coeficiente. Se ficar igual, o material **perde menos** que os
+   concorrentes, mas não ganha deles: a frase de venda muda.
+5. Repita com os locais de **menor sc/ha** para separar efeito de época de efeito de ambiente
+   pobre. Se um local aparece nos dois recortes, ele está contado duas vezes.
+
+---
+
+**⚠️ Cuidados**
+
+- **Menos de 3 locais não sustenta afirmação.** Com 2 locais, o aproveitamento contra um
+  adversário só pode dar 0, 50 ou 100. O aviso aparece sozinho abaixo da tabela.
+- **A cor é relativa ao filtro.** Mudou o estado, mudaram as faixas. Ao comparar duas leituras,
+  confirme que o recorte é o mesmo.
+- **Recortar locais é poderoso e perigoso.** Dá para escolher os três em que a linha ganha e
+  apresentar como recorte — por isso o resumo abaixo da tabela sempre diz quantos locais estão
+  em tela.
+""")
+
+        st.caption(
+            f"{len(tab_loc)} locais · média de todas as parcelas do local, todos os híbridos · "
+            "verde = extremo superior, vermelho = extremo inferior do recorte em tela"
+            + (" · plantio em vermelho = mais tardio" if _cp else
+               " · sem coluna de data de plantio na base")
+        )
+        if not _cp:
+            _cand = candidatas_data(ta_filtrado)
+            st.info(
+                "**Data de plantio não encontrada.** Sem ela não existem a coluna Plantio aqui "
+                "nem os terços de época em Todos os Materiais. O nome esperado é "
+                "`dataPlantioMilho`, vindo da tabela fazenda pelo pipeline. "
+                + (f"Colunas com conteúdo de data nesta base: `{'`, `'.join(_cand[:12])}`."
+                   if _cand else
+                   "Nenhuma coluna desta base contém datas — verifique se `dataPlantioMilho` "
+                   "está em CONTEXTO no pipeline."))
+
+        _headers = list(tab_loc.columns)
+        _linhas = []
+        for i in range(len(tab_loc)):
+            r = tab_loc.iloc[i]
+            c_sc, c_pl = CORES_FAIXA[_f_sc[i]], CORES_FAIXA[_f_pl[i]]
+            # o código herda o destaque mais forte da linha, para achar o local rápido
+            c_cod = c_pl if _f_pl[i] in ("baixo", "medio-baixo") else c_sc
+            linha = [cel(r["Código"], cor=c_cod, bold=True),
+                     cel(r["Fazenda"]), cel(r["Cidade"]), cel(r["Macro"]), cel(r["Micro"]),
+                     cel(r["sc/ha"], "num1", cor=c_sc, bold=_f_sc[i] in ("alto", "baixo"))]
+            if _cp:
+                linha.append(cel(r["Plantio"], cor=c_pl, align="center",
+                                 bold=_f_pl[i] in ("alto", "baixo")))
+            if mostrar_placar:
+                linha += [cel(r["Amplitude"], "num1"),
+                          cel(r["Confrontos"], "num0"),
+                          cel(r["Aprov. %"], "pct1", barra=r["Aprov. %"],
+                              cor="#2976B6" if pd.notna(r["Aprov. %"]) and r["Aprov. %"] >= 50
+                              else "#9AA5B1"),
+                          cel(r["Dif. sc/ha"], "sinal1",
+                              cor="#1E7A34" if pd.notna(r["Dif. sc/ha"]) and r["Dif. sc/ha"] > 0
+                              else "#C0201E")]
+            _linhas.append(linha)
+
+        _leg_loc = [("#1E7A34", "extremo superior do recorte", "txt"),
+                    ("#3E9E52", "acima da média", "txt"),
+                    ("#E06C00", "abaixo da média", "txt"),
+                    ("#C0201E", "extremo inferior · e plantio mais tardio", "txt")]
+        if mostrar_placar:
+            _leg_loc.append(("#2976B6", "aproveitamento da linha no local", "barra"))
+        render_tabela(_headers, _linhas, "h2h_locais", "exp_loc", largura_1a=150,
+                      legenda=_leg_loc)
+
+        # ── resumo do recorte em tela — automático, sem seleção extra ────────
+        _cods = list(tab_loc["Código"])
+        _r = _car.loc[_car.index.isin(_cods)]
+        _conf = int(_r["_conf"].fillna(0).sum())
+        _vit = int(_r["_vit"].fillna(0).sum())
+        _emp = int(_r["_emp"].fillna(0).sum())
+        _der = int(_r["_der"].fillna(0).sum())
+        _placar = (f' · a linha Stine faz <b>{_vit / _conf * 100:.1f}%</b> de aproveitamento '
+                   f'({_vit}–{_emp}–{_der} em {_conf} confrontos)') if _conf else ""
+        st.markdown(
+            f'<div style="background:#F7F7F7;border-left:5px solid #2976B6;border-radius:8px;'
+            f'padding:14px 18px;margin:14px 0 4px;">'
+            f'<p style="margin:0;font-size:15.5px;line-height:1.6;color:#1A1A1A;'
+            f'font-family:\'Helvetica Neue\',Helvetica,Arial,sans-serif;">'
+            f'<b>Recorte em tela: {len(_cods)} {"local" if len(_cods) == 1 else "locais"}</b> · '
+            f'média {_base_loc["sc_ha"].mean():.1f} sc/ha{_placar}. '
+            f'Este é o recorte que as outras quatro abas estão usando.</p></div>',
+            unsafe_allow_html=True)
+        if len(_cods) < 3:
+            st.warning("Menos de 3 locais no filtro. Serve para investigar, não para afirmar.")
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -599,7 +1038,7 @@ dois. Por isso o mesmo híbrido pode aparecer com médias diferentes em linhas d
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — Análise por Local (a construir)
+# TAB 2 — Análise por Local
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab2:
     secao_titulo(
@@ -1011,7 +1450,7 @@ com diferenças grandes em ambos os sentidos indicam que o ambiente decide o ven
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — Desvios por Ambiente (a construir)
+# TAB 3 — Desvios por Ambiente
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab3:
     secao_titulo(
@@ -1265,6 +1704,624 @@ se um sobe enquanto o outro desce conforme o ambiente muda.
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                    key="dl_t3")
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB L — Todos os Materiais
+# ═══════════════════════════════════════════════════════════════════════════════
+with tabL:
+    secao_titulo(
+        "HEAD-TO-HEAD · TODOS OS MATERIAIS",
+        "A linha inteira contra o campo, em quatro leituras",
+        "Mesmo cálculo das outras abas, agregado para todos os materiais da linha de uma vez. "
+        "Escolha a leitura abaixo.",
+    )
+
+    _st_disp = [s for s in STATUS_P1 if s in ta_raw["status_material"].unique()]
+    _status_linha = st.multiselect(
+        "Status na coluna Material", _st_disp,
+        default=[s for s in ["STINE"] if s in _st_disp] or _st_disp[:1],
+        key="tabL_status_linha",
+        help="Quem entra como 'linha'. Do outro lado do confronto ficam sempre os "
+             "concorrentes comerciais (CHECK).")
+    if not _status_linha:
+        _status_linha = [s for s in ["STINE"] if s in _st_disp] or _st_disp[:1]
+    _tup_linha = tuple(sorted(_status_linha))
+
+    _cruz_all = cruzar_linha(ta_raw, _tup_linha, STATUS_ADVERSARIO)
+    _ativos = set(ta_filtrado["cod_fazenda"].dropna().unique())
+    _cruz = _cruz_all[_cruz_all["cod_fazenda"].isin(_ativos)].copy()
+
+    if _cruz.empty:
+        st.info("Nenhum confronto com os filtros atuais. Verifique o Status do Adversário na lateral.")
+    else:
+        # ── quem entra na tabela ────────────────────────────────────────────
+        # Vazio = todos, mesma convenção dos filtros da barra lateral.
+        _cruz_cheio = _cruz.copy()
+        _mats_all = sorted(_cruz_cheio["material"].unique())
+        _advs_all = sorted(_cruz_cheio["adversario"].unique())
+
+        _cf1, _cf2 = st.columns(2)
+        with _cf1:
+            _sel_mat = st.multiselect(
+                f"Materiais da linha ({len(_mats_all)})", _mats_all, key="tabL_mat",
+                placeholder="Todos — desmarcado significa todos")
+        with _cf2:
+            _sel_adv = st.multiselect(
+                f"Adversários ({len(_advs_all)})", _advs_all, key="tabL_adv",
+                placeholder="Todos — desmarcado significa todos")
+        _sel_mat = _sel_mat or _mats_all
+        _sel_adv = _sel_adv or _advs_all
+        _cruz = _cruz_cheio[_cruz_cheio["material"].isin(_sel_mat)
+                            & _cruz_cheio["adversario"].isin(_sel_adv)]
+
+        if _cruz.empty:
+            st.warning("A combinação escolhida não tem nenhum confronto.")
+            st.stop()
+
+        # ── contexto do recorte ─────────────────────────────────────────────
+        _n_loc = _cruz["cod_fazenda"].nunique()
+        _n_adv = _cruz["adversario"].nunique()
+        _n_mat = _cruz["material"].nunique()
+        _ap_geral = (_cruz["res"] == "V").mean() * 100
+
+        # Recortar adversário muda o denominador de todos os materiais: com os mais
+        # duros de fora, o aproveitamento sobe sozinho. O aviso existe para que essa
+        # escolha nunca fique implícita.
+        if len(_sel_adv) < len(_advs_all):
+            _ap_cheio = (_cruz_cheio[_cruz_cheio["material"].isin(_sel_mat)]["res"] == "V").mean() * 100
+            _fora = [a for a in _advs_all if a not in _sel_adv]
+            st.markdown(
+                f'<div style="background:#FFF8E1;border:1px solid #F5D76E;'
+                f'border-left:5px solid #D4A800;border-radius:8px;padding:12px 18px;'
+                f'margin:6px 0 10px;">'
+                f'<p style="margin:0;font-size:15px;line-height:1.6;color:#4A3B00;'
+                f'font-family:\'Helvetica Neue\',Helvetica,Arial,sans-serif;">'
+                f'<b>Universo de adversários reduzido:</b> {len(_sel_adv)} de {len(_advs_all)}. '
+                f'Ficaram de fora {", ".join(_fora[:6])}{" ..." if len(_fora) > 6 else ""}. '
+                f'Com todos, o aproveitamento seria <b>{_ap_cheio:.1f}%</b>; com esta seleção é '
+                f'<b>{_ap_geral:.1f}%</b>. Números de recortes diferentes não se comparam entre si '
+                f'nem com os das outras abas.</p></div>',
+                unsafe_allow_html=True)
+        elif len(_sel_mat) < len(_mats_all):
+            st.caption(f"Mostrando {len(_sel_mat)} de {len(_mats_all)} materiais. O universo de "
+                       "adversários está inteiro, então os percentuais continuam comparáveis com "
+                       "as outras abas.")
+
+        _conf_mat = _cruz.groupby("material").size()
+        _conf_max = int(_conf_mat.max()) if len(_conf_mat) else 0
+        _POUCO = 0.5 * _conf_max          # metade da cobertura do mais testado
+        _magros = sorted(_conf_mat[_conf_mat < _POUCO].index)
+        if _magros:
+            st.caption(
+                f"⚠️ Cobertura desigual: {', '.join(_magros[:8])}"
+                f"{' ...' if len(_magros) > 8 else ''} "
+                f"{'têm' if len(_magros) > 1 else 'tem'} menos da metade dos confrontos do "
+                f"material mais testado ({_conf_max}). O percentual deles oscila muito — leia "
+                "sempre junto com a coluna Confrontos, destacada em laranja.")
+
+        _leitura = st.radio("Leitura", ["Placar", "Matriz", "Por ambiente", "Local a local"],
+                            horizontal=True, key="tabL_leitura", label_visibility="collapsed")
+
+        st.caption("Adversários: apenas os concorrentes comerciais (CHECK). É fixo nesta aba — "
+                   "o filtro Status do Adversário da barra lateral não a altera.")
+
+        _COMUM = """
+**📌 O que este painel responde**
+
+> **A linha inteira ganha de quem, perde de quem, e em que tipo de ambiente isso muda?**
+
+As outras abas olham um material por vez. Esta olha a linha como portfólio.
+
+---
+
+**🔢 O cálculo, comum às quatro leituras**
+
+1. Em cada **local**, tira-se a média das parcelas de cada material.
+2. Cada par (material da linha × adversário) que dividiu um local é **um confronto**.
+3. `diferença = média do material − média do adversário`, naquele local.
+4. Acima de **+1,0 sc/ha** é vitória · entre −1,0 e +1,0 é **empate** · abaixo é derrota.
+5. **Aproveitamento = vitórias ÷ confrontos.** O empate **não vale meio ponto**: fica fora do
+   numerador e dentro do denominador.
+6. **Do lado adversário ficam só os comerciais (CHECK)**, sempre — é o universo de disputa de
+   mercado. O seletor de status muda quem está na coluna Material, nunca o adversário.
+
+> Por isso o total de confrontos é muito maior que o de locais: são materiais × adversários ×
+locais em comum.
+
+---
+"""
+
+        _CUIDADOS = """
+---
+
+**⚠️ Cuidados válidos para as quatro leituras**
+
+- **Aproveitamento não é produtividade.** Vencer 51 de 100 por 1,5 sc/ha e vencer 51 por 15 sc/ha
+  dão o mesmo número — por isso a diferença média está sempre ao lado.
+- **Recortes diferentes não se comparam.** Mudou o filtro, mudaram os adversários e os locais.
+- **Os locais vêm da barra lateral**, os mesmos das outras quatro abas.
+- **O universo de adversários é fixo em CHECK.** O filtro Status do Adversário da lateral vale
+  para as três primeiras abas, não para esta — aqui o número precisa ser reprodutível.
+- **Os dois seletores acima da tabela são desta aba.** Escolher quais materiais aparecem é
+  inofensivo — muda só quais linhas são desenhadas. **Escolher adversários muda o denominador de
+  todos**: com os mais duros de fora, o aproveitamento sobe sozinho. Por isso aparece um aviso
+  amarelo com o número que sairia se o universo estivesse inteiro.
+- **Adversário com poucos locais em comum** entra no agregado, mas não deve ser citado pelo nome.
+  A coluna de confrontos existe para isso.
+"""
+
+        _DIC = {
+            "Placar": """
+**📋 O que é cada coluna**
+
+| Coluna | O que é | Como é calculado |
+|---|---|---|
+| **Material** | híbrido da linha | — |
+| **Aprov. %** | quanto dos confrontos ele venceu | `V ÷ Confrontos × 100`. A barra é o próprio valor, de 0 a 100 |
+| **V · E · D** | vitórias, empates e derrotas | contagem dos confrontos pela regra de ±1,0 sc/ha |
+| **Confrontos** | quantos duelos entraram na conta | `adversários × locais em comum com cada um`. Some V+E+D e tem que bater |
+| **Dif. média sc/ha** | por quanto ele ganha ou perde | média de todas as diferenças dos confrontos dele. Verde positivo, vermelho negativo |
+| **Alta perf. · Superior · Competitivo · Restrito** | contra quantos **adversários** ele está em cada faixa | para cada adversário calcula-se o % de vitórias contra ele; a faixa é a do painel (>75 · 56–75 · 46–55 · até 45). São contagens de adversários, **não de confrontos** |
+
+---
+
+**🧭 Exemplo de uso**
+
+Dois materiais aparecem com aproveitamento parecido, digamos 31% e 30%.
+
+1. Olhe **V–E–D**: se um tem 40–9–79 e o outro 42–4–92, eles chegaram ao mesmo lugar por
+   caminhos diferentes — o primeiro empata mais, o segundo perde mais.
+2. Olhe **Dif. média**: se as duas forem próximas, a diferença entre eles é de consistência, não
+   de patamar.
+3. Olhe as **quatro últimas colunas**: um material com 2 adversários em Superior tem duelo
+   favorável para vender; um com zero em Superior e 10 em Restrito não tem argumento de placar
+   neste recorte — o argumento dele terá de vir de ambiente, e a leitura seguinte mostra isso.
+""",
+            "Matriz": """
+**📋 O que é cada coluna**
+
+| Coluna | O que é | Como é calculado |
+|---|---|---|
+| **Material** | híbrido da linha, do melhor para o pior aproveitamento geral | — |
+| **Uma coluna por adversário** | % de vitórias daquele material contra aquele adversário | `vitórias ÷ locais em comum do par × 100`. Célula vazia = nunca dividiram local |
+| **APROVEITAMENTO DA LINHA** (penúltima linha) | quanto a linha inteira venceu daquele adversário | soma das vitórias de **todos** os materiais contra ele ÷ soma dos confrontos |
+| **DIF. MÉDIA sc/ha** (última linha) | por quanto a linha ganha ou perde dele | média das diferenças de todos os duelos contra aquele adversário |
+
+A cor é a classificação do painel: verde acima de 75 · azul 56 a 75 · amarelo 46 a 55 ·
+vermelho até 45.
+
+**A ordenação é o argumento.** Colunas do adversário mais duro para o mais fácil, medido pelo
+aproveitamento da linha inteira. Reordenar por fabricante destrói a leitura.
+
+---
+
+**🧭 Exemplo de uso**
+
+1. **Por coluna**: se as três primeiras colunas forem vermelhas de cima a baixo, esses são os
+   concorrentes que a linha não enfrenta neste recorte. Contra eles não existe discurso de
+   produtividade — existe discurso de atributo. É informação de portfólio, e não aparece em
+   nenhuma outra tela.
+2. **Por linha**: procure o ponto em que a linha de cada material vira de vermelho para verde.
+   Quem vira cedo tem portfólio amplo; quem não vira em nenhuma coluna é material de nicho, e o
+   nicho terá de ser definido por outro critério que não o placar.
+3. **Antes de citar um duelo pelo nome**, exporte o "par a par" e confira o nº de confrontos
+   daquela célula.
+""",
+            "Por ambiente": """
+**📋 O que é cada coluna**
+
+| Coluna | O que é | Como é calculado |
+|---|---|---|
+| **Material** | híbrido da linha · a última linha é a **linha inteira** | — |
+| **Geral %** | aproveitamento em todos os locais do recorte | `vitórias ÷ confrontos` |
+| **Produtividade Baixa · Média · Alta** | aproveitamento só nos locais daquele terço | os locais em tela são divididos em **três grupos de tamanho igual** pela média do local (`qcut` em 3). "Baixa" é o terço inferior **deste recorte**, não da rede |
+| **Plantio Cedo · Meio · Tardio** | aproveitamento só nos locais daquele terço de época | mesma divisão em três, pela data de semeadura do ensaio. Só aparece se a base tiver a data |
+| **(NL)** no cabeçalho | quantos locais entraram naquele terço | — |
+
+**Os dois cortes são independentes e não somam.** Um local pode ser de produtividade baixa e de
+plantio tardio ao mesmo tempo — ele aparece nas duas colunas, e somá-las conta o local duas vezes.
+
+---
+
+**🧭 Exemplo de uso**
+
+Um material tem aproveitamento geral baixo e você precisa decidir se ele tem argumento.
+
+1. Se o número **sobe** da Produtividade Alta para a Baixa, ele é material de ambiente
+   restritivo: perde onde sobra tudo e ganha onde falta.
+2. Se **sobe** de Plantio Cedo para Tardio, ele é material de janela apertada.
+3. Se subir nos dois, confira se são os mesmos locais — exporte "quais locais entraram em cada
+   terço". Se forem os mesmos, é **um** achado, não dois.
+4. A afirmação sobre a marca sai da última linha, não do material isolado.
+""",
+            "Local a local": """
+**📋 O que é cada coluna**
+
+| Coluna | O que é | Como é calculado |
+|---|---|---|
+| **Material** | híbrido da linha | — |
+| **Uma coluna por local** | `vitórias/confrontos` daquele material naquele local | confrontos = quantos adversários ele enfrentou ali. Célula vazia = ele não foi avaliado no local |
+| **MÉDIA DO LOCAL sc/ha** | quanto o ambiente rendeu | média de **todas** as parcelas de **todos** os híbridos do local |
+| **APROV. DA LINHA %** | quanto a linha inteira venceu ali | vitórias de todos os materiais ÷ confrontos daquele local |
+
+Colunas ordenadas da **menor** para a **maior** média do local. Verde a partir de 70% de vitórias
+no local, vermelho até 20%.
+
+---
+
+**🧭 Exemplo de uso**
+
+1. **Leia a tendência, não a célula.** Verde à esquerda e vermelho à direita é material de
+   ambiente restritivo; o contrário é material de alto investimento; disperso é material cujo
+   desempenho não é explicado pela produtividade do local — procure em época, população ou
+   sanidade.
+2. Um `0/10` num local não é erro nem falha do material: é um ambiente em que ele não venceu
+   nenhum dos dez adversários presentes. Cruze com a média do local antes de concluir.
+3. Compare duas linhas em busca de **inversão**: dois materiais que ganham em locais opostos são
+   complementares no portfólio, e essa é uma recomendação diferente de "um é melhor que o outro".
+""",
+        }
+
+        _c1, _c2 = st.columns([3, 1])
+        with _c1:
+            st.caption(
+                f"{_n_mat} materiais da linha · {_n_adv} adversários · {_n_loc} locais · "
+                f"{len(_cruz)} confrontos · aproveitamento geral {_ap_geral:.1f}% · "
+                f"empate = ±{EMPATE_MARGEM:.1f} sc/ha"
+            )
+        with _c2:
+            with st.popover(f"ℹ️ Como entender · {_leitura}", use_container_width=True):
+                st.markdown(_COMUM + _DIC[_leitura] + _CUIDADOS)
+
+
+        VERDE, VERM, AZUL, CINZA = "#1E7A34", "#C0201E", "#2976B6", "#9AA5B1"
+        _LEG_CLASSE = [("#90EE90", "Alta Performance · acima de 75%", "bg"),
+                       ("#87CEFF", "Superior · 56 a 75%", "bg"),
+                       ("#FFFF00", "Competitivo · 46 a 55%", "bg"),
+                       ("#FF0000", "Restrito · até 45%", "bg")]
+        BG_CLASSE = [(75, "#90EE90", "#1A1A1A"), (55, "#87CEFF", "#1A1A1A"),
+                     (45, "#FFFF00", "#1A1A1A"), (-1, "#FF0000", "#FFFFFF")]
+
+        def _cel_classe(v, tipo="pct0"):
+            """Célula com fundo pela classificação do painel."""
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                return cel(None, tipo, cor=CINZA, align="center")
+            for corte, bg, fg in BG_CLASSE:
+                if v > corte:
+                    return cel(v, tipo, cor=fg, bg=bg, bold=True, align="center")
+            return cel(v, tipo, align="center")
+
+        _ordem_mat = (agregar_placar(_cruz, "material").sort_values("Aprov", ascending=False)
+                      ["material"].tolist())
+        _col_adv = agregar_placar(_cruz, "adversario").sort_values("Aprov")
+
+        # ── PLACAR ───────────────────────────────────────────────────────────
+        if _leitura == "Placar":
+            _p = agregar_placar(_cruz, "material").set_index("material")
+            _pa = agregar_placar(_cruz, ["material", "adversario"])
+            _pa["classe"] = _pa["Aprov"].apply(lambda v: classificar_h2h(v)[0])
+            _cl = _pa.pivot_table(index="material", columns="classe", values="adversario",
+                                  aggfunc="count").fillna(0).astype(int)
+            for _k in ["Alta Performance", "Superior", "Competitivo", "Restrito"]:
+                if _k not in _cl.columns:
+                    _cl[_k] = 0
+
+            st.caption(
+                "Ordenado do melhor para o pior aproveitamento. "
+                f"**As quatro últimas colunas contam concorrentes, não confrontos:** dizem contra "
+                f"quantos dos {_n_adv} concorrentes do recorte o material está em cada faixa. "
+                f"Somadas, dão quantos concorrentes ele chegou a enfrentar — no máximo {_n_adv}, "
+                "menos que isso se não dividiu local com algum deles.")
+            # V, E e D com as mesmas cores da Análise por Local. No cabeçalho vai a
+            # cor cheia; no número, a variante legível — COR_EMPATE é amarelo puro e
+            # não se lê como texto, por isso existe COR_EMPATE_CARD.
+            _TXT_V, _TXT_E, _TXT_D = COR_VITORIA, "#D4A800", COR_DERROTA
+            _headers = ["Material", "Aprov.",
+                        hdr("V", COR_VITORIA, "#FFFFFF"),
+                        hdr("E", COR_EMPATE, "#1A1A1A"),
+                        hdr("D", COR_DERROTA, "#FFFFFF"),
+                        "Confrontos", "Dif. média sc/ha",
+                        hdr("Alta perf.", "#90EE90", "#1A1A1A"),
+                        hdr("Superior", "#87CEFF", "#1A1A1A"),
+                        hdr("Competitivo", "#FFFF00", "#1A1A1A"),
+                        hdr("Restrito", "#FF0000", "#FFFFFF")]
+            _linhas = []
+            for m in _ordem_mat:
+                r = _p.loc[m]
+                _linhas.append([
+                    cel(m, bold=True),
+                    cel(r["Aprov"], "pct1", barra=r["Aprov"],
+                        cor=AZUL if r["Aprov"] >= 50 else CINZA),
+                    cel(r["V"], "num0", align="center", cor=_TXT_V, bold=True),
+                    cel(r["E"], "num0", align="center", cor=_TXT_E),
+                    cel(r["D"], "num0", align="center", cor=_TXT_D),
+                    cel(r["Confrontos"], "num0", align="center",
+                        cor="#E06C00" if r["Confrontos"] < _POUCO else "#1A1A1A",
+                        bold=r["Confrontos"] < _POUCO),
+                    cel(r["Dif"], "sinal1", cor=VERDE if r["Dif"] > 0 else VERM, bold=True),
+                    cel(_cl.loc[m, "Alta Performance"], "num0", align="center"),
+                    cel(_cl.loc[m, "Superior"], "num0", align="center"),
+                    cel(_cl.loc[m, "Competitivo"], "num0", align="center"),
+                    cel(_cl.loc[m, "Restrito"], "num0", align="center"),
+                ])
+            render_tabela(_headers, _linhas, "h2h_placar_linha", "exp_placar", largura_1a=200,
+                          legenda=[(AZUL, "aproveitamento de 50% ou mais", "barra"),
+                                   (CINZA, "abaixo de 50%", "barra"),
+                                   (VERDE, "diferença média positiva", "txt"),
+                                   (VERM, "diferença média negativa", "txt"),
+                                   ("#E06C00", "menos da metade dos confrontos do mais "
+                                    "testado — percentual instável", "txt")])
+            st.caption("As quatro últimas colunas usam as mesmas cores da Tabela de "
+                       "Classificação e da Matriz: são as faixas do painel, aplicadas ao "
+                       "cabeçalho porque a coluna inteira é daquela classe.")
+
+        # ── MATRIZ ───────────────────────────────────────────────────────────
+        elif _leitura == "Matriz":
+            _ordem_adv = _col_adv["adversario"].tolist()
+            _pa = agregar_placar(_cruz, ["material", "adversario"])
+            _mx = _pa.pivot(index="material", columns="adversario", values="Aprov")
+            _nx = _pa.pivot(index="material", columns="adversario", values="Confrontos")
+            _ca = _col_adv.set_index("adversario")
+            _min_n = int(np.nanmin(_nx.values)) if _nx.size else 0
+
+            st.caption(
+                f"% de vitórias. Colunas do adversário **mais duro** (esquerda) para o **mais "
+                f"fácil** (direita); linhas do melhor para o pior aproveitamento. "
+                f"Menor nº de locais em comum de um par: {_min_n}. "
+                "Cor pela classificação do painel — verde acima de 75%, azul 56 a 75%, "
+                "amarelo 46 a 55%, vermelho até 45%."
+            )
+            _headers = ["Material"] + _ordem_adv
+            _linhas = []
+            for m in _ordem_mat:
+                _linhas.append([cel(m, bold=True)] + [
+                    _cel_classe(_mx.loc[m, a] if (m in _mx.index and a in _mx.columns) else np.nan)
+                    for a in _ordem_adv])
+            _linhas.append([cel_resumo("APROVEITAMENTO DA LINHA")] +
+                           [cel_resumo(float(_ca.loc[a, "Aprov"]), "pct0") for a in _ordem_adv])
+            _linhas.append([cel_resumo("DIF. MÉDIA sc/ha")] +
+                           [cel_resumo(float(_ca.loc[a, "Dif"]), "sinal1") for a in _ordem_adv])
+            render_tabela(_headers, _linhas, "h2h_matriz", "exp_matriz", largura_1a=210,
+                          legenda=_LEG_CLASSE + [(BG_RESUMO, "linha de resumo — a linha inteira "
+                                                  "contra aquele adversário", "bg")])
+            st.caption("As duas últimas linhas são a leitura por coluna: a linha inteira contra "
+                       "aquele adversário. Coluna vermelha de ponta a ponta é adversário que a "
+                       "linha não enfrenta neste recorte.")
+            _exp_pares = (_pa.rename(columns={"material": "Material", "adversario": "Adversário",
+                                              "Aprov": "Aprov. %", "Dif": "Dif. média sc/ha"})
+                          .round(1))
+            botao_exportar(_exp_pares, "h2h_pares_detalhe", "exp_pares",
+                           "⬇️ Exportar par a par (com nº de confrontos)",
+                           cols_pct=["Aprov. %"])
+
+        # ── POR AMBIENTE ─────────────────────────────────────────────────────
+        elif _leitura == "Por ambiente":
+            _mloc = (ta_filtrado.dropna(subset=["sc_ha"]).groupby("cod_fazenda")["sc_ha"].mean())
+            _mloc = _mloc[_mloc.index.isin(_cruz["cod_fazenda"].unique())]
+            _recortes = {}
+            if len(_mloc) >= 6:
+                _q = pd.qcut(_mloc, 3, labels=["Baixa", "Média", "Alta"])
+                for _r in ["Baixa", "Média", "Alta"]:
+                    _recortes[f"Produtividade {_r}"] = set(_mloc.index[_q == _r])
+            _q_prod = _q if len(_mloc) >= 6 else None
+            _q_ep, _dtl = None, None
+            _cpL = _col_plantio(ta_filtrado)
+            if _cpL:
+                _dtl = (ta_filtrado[["cod_fazenda", _cpL]].drop_duplicates("cod_fazenda")
+                        .set_index("cod_fazenda")[_cpL])
+                _dtl = pd.to_datetime(_dtl, errors="coerce").dropna()
+                _dtl = _dtl[_dtl.index.isin(_cruz["cod_fazenda"].unique())]
+                if len(_dtl) >= 6:
+                    _q_ep = pd.qcut(_dtl.rank(method="first"), 3, labels=["Cedo", "Meio", "Tardio"])
+                    for _r in ["Cedo", "Meio", "Tardio"]:
+                        _recortes[f"Plantio {_r}"] = set(_dtl.index[_q_ep == _r])
+
+            if not _recortes:
+                st.info("Recorte pequeno demais para dividir em terços — são necessários ao menos "
+                        "6 locais. Use o filtro Fazenda da barra lateral.")
+            else:
+                st.caption(
+                    "Aproveitamento em cada terço do recorte. Os terços são calculados **sobre os "
+                    "locais em tela** — 'Baixa' é o terço inferior deste recorte, não da rede. "
+                    "(NL) é o nº de locais do terço. Um mesmo local pode estar num terço de "
+                    "produtividade e num de época: são cortes independentes, não somam."
+                )
+                _headers = ["Material", "Geral"] + [f"{k} ({len(v)}L)" for k, v in _recortes.items()]
+                _linhas = []
+                _rot_total = ("LINHA INTEIRA" if _tup_linha == ("STINE",)
+                              else "TOTAL · " + " + ".join(_tup_linha))
+                for m in _ordem_mat + [_rot_total]:
+                    _resumo = (m == _rot_total)
+                    _d = _cruz if _resumo else _cruz[_cruz["material"] == m]
+                    _fabr = cel_resumo if _resumo else None
+                    linha = [cel_resumo(m) if _resumo else cel(m, bold=True),
+                             cel_resumo((_d["res"] == "V").mean() * 100, "pct1")]
+                    for _locs in _recortes.values():
+                        _s = _d[_d["cod_fazenda"].isin(_locs)]
+                        _v = (_s["res"] == "V").mean() * 100 if len(_s) else np.nan
+                        linha.append(_fabr(_v, "pct1") if _fabr else _cel_classe(_v, "pct1"))
+                    _linhas.append(linha)
+                render_tabela(_headers, _linhas, "h2h_por_ambiente", "exp_amb", largura_1a=210,
+                              legenda=_LEG_CLASSE + [(BG_RESUMO, "coluna Geral e linha da marca — "
+                                                      "resumo, não comparável célula a célula", "bg")])
+                st.caption("Leia na horizontal: material cujo aproveitamento sobe da esquerda para "
+                           "a direita responde ao ambiente. A última linha agrega os materiais "
+                           "selecionados — só é afirmação sobre a marca quando a seleção é a "
+                           "linha comercial.")
+                if not _cpL:
+                    st.info("**Terços de época indisponíveis:** a analítica não trouxe "
+                            "`dataPlantioMilho`. Só os terços de produtividade estão na tabela.")
+                elif _q_ep is None:
+                    st.caption("Menos de 6 locais com data de plantio válida: os terços de época "
+                               "não foram calculados.")
+
+                with st.expander("Quais locais entraram em cada terço, e por quê", expanded=False):
+                    st.markdown(
+                        "Os terços são calculados **sobre os locais em tela**, dividindo-os em "
+                        "três grupos de tamanho igual — por média do local (produtividade) e "
+                        "pela ordem da data de semeadura (época). Não há corte fixo: mudou o "
+                        "filtro lateral, mudam os grupos. Por isso a mesma fazenda pode ser "
+                        "'Alta' num recorte de MT e 'Média' num recorte da rede inteira.")
+                    _fz = (ta_filtrado[["cod_fazenda", "nomeFazenda", "cidade_nome"]]
+                           .drop_duplicates("cod_fazenda").set_index("cod_fazenda"))
+                    _ordem_det = list(_mloc.sort_values().index)
+                    _hd = ["Local", "Fazenda", "Cidade", "Média sc/ha", "Terço de produtividade"]
+                    if _q_ep is not None:
+                        _hd += ["Plantio", "Terço de época"]
+                    _ld = []
+                    for _l in _ordem_det:
+                        _tp = str(_q_prod[_l]) if _q_prod is not None else "—"
+                        _cor_tp = {"Baixa": VERM, "Alta": VERDE}.get(_tp, "#1A1A1A")
+                        linha = [cel(_l, bold=True),
+                                 cel(_fz["nomeFazenda"].get(_l, "")),
+                                 cel(_fz["cidade_nome"].get(_l, "")),
+                                 cel(float(_mloc[_l]), "num1"),
+                                 cel(_tp, cor=_cor_tp, bold=_tp in ("Baixa", "Alta"),
+                                     align="center")]
+                        if _q_ep is not None:
+                            _te = str(_q_ep[_l]) if _l in _q_ep.index else "—"
+                            _cor_te = {"Tardio": VERM, "Cedo": VERDE}.get(_te, "#1A1A1A")
+                            linha += [cel(_dtl[_l].strftime("%d/%m") if _l in _dtl.index else "",
+                                          cor=_cor_te, align="center"),
+                                      cel(_te, cor=_cor_te, bold=_te in ("Cedo", "Tardio"),
+                                          align="center")]
+                        _ld.append(linha)
+                    render_tabela(_hd, _ld, "h2h_ambiente_locais", "exp_amb_loc",
+                                  largura_1a=150, altura_max=420,
+                                  legenda=[(VERDE, "terço mais produtivo · plantio mais cedo", "txt"),
+                                           (VERM, "terço menos produtivo · plantio mais tardio", "txt")])
+                    if _q_ep is not None and _q_prod is not None:
+                        _dois = [l for l in _ordem_det
+                                 if str(_q_prod[l]) == "Baixa" and l in _q_ep.index
+                                 and str(_q_ep[l]) == "Tardio"]
+                        if _dois:
+                            st.warning(
+                                f"{len(_dois)} local(is) está(ão) nos dois recortes ao mesmo "
+                                f"tempo — produtividade baixa E plantio tardio: "
+                                f"{', '.join(_dois)}. O ganho que aparece numa coluna é em parte "
+                                f"o mesmo da outra. Não somar as duas leituras.")
+
+        # ── LOCAL A LOCAL ────────────────────────────────────────────────────
+        else:
+            _mloc = (ta_filtrado.dropna(subset=["sc_ha"]).groupby("cod_fazenda")["sc_ha"].mean()
+                     .sort_values())
+            _locs = [c for c in _mloc.index if c in set(_cruz["cod_fazenda"])]
+            _v = _cruz.pivot_table(index="material", columns="cod_fazenda", values="res",
+                                   aggfunc=lambda s: (s == "V").sum())
+            _n = _cruz.pivot_table(index="material", columns="cod_fazenda", values="res",
+                                   aggfunc="size")
+            st.caption(
+                "Vitórias sobre confrontos em cada local, ordenado da **menor** para a **maior** "
+                "média do local. A leitura é a tendência da esquerda para a direita, não a célula: "
+                "verde à esquerda e vermelho à direita é material de ambiente restritivo."
+            )
+            _headers = ["Material"] + _locs
+            _linhas = []
+            for m in _ordem_mat:
+                linha = [cel(m, bold=True)]
+                for c in _locs:
+                    if m in _v.index and c in _v.columns and pd.notna(_n.loc[m, c]):
+                        vv, nn = int(_v.loc[m, c]), int(_n.loc[m, c])
+                        f = vv / nn
+                        cor = VERDE if f >= 0.70 else (VERM if f <= 0.20 else "#1A1A1A")
+                        linha.append(cel(f"{vv}/{nn}", cor=cor, bold=f >= 0.70 or f <= 0.20,
+                                         align="center"))
+                    else:
+                        linha.append(cel("", align="center"))
+                _linhas.append(linha)
+            _linhas.append([cel_resumo("MÉDIA DO LOCAL sc/ha")] +
+                           [cel_resumo(float(_mloc[c]), "num1") for c in _locs])
+            _linhas.append([cel_resumo("APROV. DA LINHA")] +
+                           [cel_resumo((_cruz[_cruz["cod_fazenda"] == c]["res"] == "V").mean() * 100,
+                                       "pct0") for c in _locs])
+            render_tabela(_headers, _linhas, "h2h_local_a_local", "exp_local", largura_1a=210,
+                          legenda=[(VERDE, "venceu 70% ou mais dos confrontos do local", "txt"),
+                                   (VERM, "venceu 20% ou menos", "txt"),
+                                   (BG_RESUMO, "linhas de resumo — contexto do local, não "
+                                    "desempenho de material", "bg")])
+            st.caption("As duas últimas linhas dão o contexto do local: quanto rendeu e quanto a "
+                       "linha inteira venceu ali. Célula vazia = os dois não dividiram aquele local.")
+
+        # ── conferência entre abas ──────────────────────────────────────────
+        st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+        with st.expander("Conferência: os números desta aba batem com os das outras?",
+                         expanded=False):
+            st.markdown(
+                "Cada aba chega ao placar por um caminho de código diferente: a **Tabela de "
+                "Classificação** usa `cruzar_por_local` a partir de um Produto 1 por vez, a aba "
+                "**Locais** usa `caracterizar_locais` agregando por local, e esta usa "
+                "`cruzar_linha` de uma vez só. Os três deveriam dar o mesmo número no mesmo "
+                "recorte — a conferência abaixo recalcula pelos três caminhos e compara.\n\n"
+                "> Isto verifica **coerência interna do painel**, não a correção do dado. Se a "
+                "base estiver errada, os três erram junto.")
+
+            _locais_tela = set(_cruz["cod_fazenda"].unique())
+            _res_conf, _tudo_ok = [], True
+
+            for _m in _sel_mat:
+                _a = _cruz[_cruz["material"] == _m]
+                _va = int((_a["res"] == "V").sum())
+                _na = len(_a)
+                # caminho da Tabela de Classificação, replicado
+                _p1f = ta_raw[(ta_raw["status_material"].isin(STATUS_P1)) & (ta_raw["dePara"] == _m)]
+                _p2f = ta_raw[ta_raw["dePara"] != _m]
+                _cr = cruzar_por_local(_p1f, _p2f)
+                if not _cr.empty:
+                    _cr = _cr[_cr["cod_fazenda"].isin(_locais_tela)
+                              & _cr["status_material_2"].isin(STATUS_ADVERSARIO)
+                              & _cr["dePara_2"].isin(_sel_adv)]
+                    _d = _cr["sc_ha_1"] - _cr["sc_ha_2"]
+                    _vb, _nb = int((_d > EMPATE_MARGEM).sum()), len(_cr)
+                else:
+                    _vb = _nb = 0
+                _ok = (_va == _vb) and (_na == _nb)
+                _tudo_ok = _tudo_ok and _ok
+                _res_conf.append((_m, _va, _na, _vb, _nb, _ok))
+
+            _hdc = ["Material", "Vitórias aqui", "Confrontos aqui",
+                    "Vitórias na Tab. Classificação", "Confrontos lá", "Situação"]
+            _ldc = []
+            for _m, _va, _na, _vb, _nb, _ok in _res_conf:
+                _c = VERDE if _ok else VERM
+                _ldc.append([cel(_m, bold=True),
+                             cel(_va, "num0", align="center"), cel(_na, "num0", align="center"),
+                             cel(_vb, "num0", align="center"), cel(_nb, "num0", align="center"),
+                             cel("confere" if _ok else "DIFERE", cor=_c, bold=True,
+                                 align="center")])
+
+            # linha inteira pelo caminho da aba Locais
+            _carc = caracterizar_locais(ta_raw, _tup_linha, STATUS_ADVERSARIO)
+            _carc = _carc[_carc["cod_fazenda"].isin(_locais_tela)]
+            _v_loc, _n_loc_conf = int(_carc["_vit"].fillna(0).sum()), int(_carc["_conf"].fillna(0).sum())
+            _v_aqui, _n_aqui = int((_cruz["res"] == "V").sum()), len(_cruz)
+            _comparavel = ((len(_sel_mat) == len(_mats_all)) and (len(_sel_adv) == len(_advs_all))
+                           and _tup_linha == ("STINE",))
+            _ok_linha = _comparavel and (_v_loc == _v_aqui) and (_n_loc_conf == _n_aqui)
+            _ldc.append([cel_resumo("TOTAL · vs aba Locais"),
+                         cel_resumo(_v_aqui, "num0"), cel_resumo(_n_aqui, "num0"),
+                         cel_resumo(_v_loc, "num0"), cel_resumo(_n_loc_conf, "num0"),
+                         cel_resumo("confere" if _ok_linha else
+                                    ("seleção parcial" if not _comparavel else "DIFERE"))])
+            render_tabela(_hdc, _ldc, "h2h_conferencia", "exp_conf", largura_1a=250,
+                          altura_max=380,
+                          legenda=[(VERDE, "os dois caminhos deram o mesmo número", "txt"),
+                                   (VERM, "divergência — investigar antes de usar", "txt")])
+
+            if not _comparavel:
+                st.caption("O total só é comparável com a aba Locais quando os dois seletores "
+                           "estão vazios: lá o cálculo é sempre com todos os materiais e todos "
+                           "os adversários do recorte.")
+            if _tup_linha != ("STINE",):
+                st.caption("A aba Locais calcula o placar sempre com status STINE. Com outro "
+                           "status selecionado aqui, a linha de total compara recortes diferentes "
+                           "de propósito — o que vale conferir é a parte de cima, material a "
+                           "material.")
+            if _tudo_ok and (_ok_linha or not _comparavel):
+                st.success("Todos os caminhos conferem neste recorte.")
+            else:
+                st.error("Há divergência entre caminhos de cálculo. Não use os números até "
+                         "entender a causa — comece conferindo se o filtro Status do Adversário "
+                         "e o recorte de locais são os mesmos nas duas abas.")
 
 
 

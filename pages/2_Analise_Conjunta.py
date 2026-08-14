@@ -29,6 +29,7 @@ COR_BORDA = {
 
 from utils.theme import aplicar_tema, page_header, secao_titulo, rodape
 from utils.loader import carregar_multisafra
+from utils.tabelas import cel, render_tabela
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 
 st.set_page_config(
@@ -51,6 +52,9 @@ def ag_table(df, height=400, estilos_col=None, renderers_col=None):
         menuTabs=["generalMenuTab", "filterMenuTab", "columnsMenuTab"],
         cellStyle={"fontSize": "14px", "color": "#000000", "fontFamily": "Helvetica Neue, sans-serif"},
     )
+    for _col in df.columns:
+        if str(_col).startswith("_"):          # colunas técnicas (ex.: _st) não aparecem
+            gb.configure_column(_col, hide=True)
     for _col, _estilo in (estilos_col or {}).items():
         if _col in df.columns:
             gb.configure_column(_col, cellStyle=_estilo)
@@ -982,6 +986,587 @@ else:
         "umidade de colheita). "
         "Linha tracejada = tendência linear entre umidade e produtividade. Pontos acima da linha "
         "produzem mais que o esperado para a sua umidade de colheita.")
+
+st.divider()
+
+# ════════════════════════════════════════════════════════════════════════════════
+# SEÇÃO 3B — UMIDADE × PRODUTIVIDADE DENTRO DO LOCAL
+#
+# A Seção 3 faz o mesmo cruzamento sobre a MÉDIA DA REDE, e ali umidade e
+# produtividade carregam efeito de onde cada híbrido foi testado. Dentro de um
+# local isso desaparece: mesmo dia de plantio, mesmo dia de colheita, mesmo solo e
+# mesmo clima para todos. A diferença de umidade entre dois pontos aqui é
+# diferença de ciclo, e nada mais.
+# ════════════════════════════════════════════════════════════════════════════════
+secao_titulo(
+    "Umidade × Produtividade dentro do local",
+    "Num único ensaio, quem colheu mais seco e quem produziu mais?",
+    "Todos os híbridos de um local foram plantados e colhidos no mesmo dia. Isso torna a "
+    "comparação de umidade entre eles limpa de ambiente — o que sobra é ciclo.",
+)
+
+with st.popover("ℹ️ Como interpretar · Umidade dentro do local", use_container_width=False):
+    st.markdown("""
+**📌 O que este gráfico mostra**
+
+Cada ponto é **um híbrido naquele local**. No eixo X, a umidade de colheita dele ali. No eixo Y,
+a produtividade dele ali.
+
+**Por que dentro do local e não na média da rede:** a Seção 3 faz o mesmo cruzamento sobre médias
+da rede, e lá a umidade de um híbrido depende de onde ele foi testado. Aqui não — data de plantio,
+data de colheita, solo e clima são os mesmos para todos os pontos do gráfico. A diferença de
+umidade entre dois híbridos é diferença de ciclo, limpa.
+
+---
+
+**🔢 Como é calculado**
+
+1. Filtra o local escolhido e descarta as parcelas sinalizadas com `umidade_baixa` ou
+   `umidade_alta` — fora da faixa sã de 10 a 40%.
+2. Média por híbrido naquele local, de umidade e de produtividade.
+3. Reta de tendência linear entre as duas, quando há ao menos 3 híbridos.
+
+---
+
+**📐 Como ler**
+
+| O que você vê | O que significa |
+|---|---|
+| **Ponto mais à esquerda** | colheu mais seco ali — mais precoce neste ensaio |
+| **Ponto mais à direita** | colheu mais úmido — mais tardio |
+| **Ponto acima da reta** | produziu mais do que o esperado para o ciclo dele |
+| **Reta subindo** | neste local, ciclo mais longo virou produtividade |
+| **Reta plana** | o ciclo não explicou a produtividade aqui; a diferença veio de outra coisa |
+
+> O canto **superior esquerdo** é a posição mais valiosa: produziu bem e colheu seco. O canto
+inferior direito é a pior: ficou no campo e não pagou por isso.
+
+---
+
+**🧭 Exemplo de uso**
+
+1. Escolha um local que interessa ao produtor — de preferência um da região dele.
+2. Veja onde o seu material cai em relação à reta. Acima dela é argumento; abaixo, não.
+3. Compare a umidade dele com a dos concorrentes **daquele ensaio**: dois pontos percentuais a
+   menos são dois pontos que o produtor não paga em secagem.
+4. Troque de local e veja se a posição se mantém. Se mudar muito, a leitura é do local e não do
+   híbrido — e aí a Secagem relativa, logo abaixo, é a que responde.
+
+---
+
+**⚠️ Cuidados**
+
+- **Um local é um local.** O que aparece aqui não vale para a rede; para generalizar, use a
+  Seção 3 ou a de secagem relativa.
+- **A reta é do local**, ajustada com os híbridos daquele ensaio. Com poucos híbridos, ela é
+  frágil — o número entra na legenda abaixo do gráfico.
+""")
+
+_base_loc_um = ta_filtrado.copy()
+if "umidade_pct" in _base_loc_um.columns:
+    _base_loc_um = _base_loc_um[pd.to_numeric(_base_loc_um["umidade_pct"], errors="coerce").notna()]
+    if "flags_produtividade" in _base_loc_um.columns:
+        _flg = _base_loc_um["flags_produtividade"].astype(str)
+        _base_loc_um = _base_loc_um[~_flg.str.contains("umidade_baixa|umidade_alta", na=False)]
+else:
+    _base_loc_um = _base_loc_um.iloc[0:0]
+
+if _base_loc_um.empty:
+    st.info("Sem dados de umidade para os filtros selecionados.")
+else:
+    _ord_loc = (_base_loc_um.groupby("cod_fazenda")["sc_ha"].mean()
+                .sort_values(ascending=False).index.tolist())
+    _cA, _cB = st.columns([2, 3])
+    with _cA:
+        _loc_sel = st.selectbox("Local", _ord_loc, key="sel_local_umid")
+    _g = _base_loc_um[_base_loc_um["cod_fazenda"] == _loc_sel]
+    _dfl = (_g.groupby("dePara", as_index=False)
+            .agg(umid=("umidade_pct", "mean"), prod=("sc_ha", "mean"),
+                 status=("status_material", "first")))
+    _dfl = _dfl[_dfl["prod"] > 0]
+
+    # contexto do ensaio: quanto tempo ficou no campo
+    _dtp = pd.to_datetime(_g.get("dataPlantioMilho"), errors="coerce").dropna()
+    _dtc = pd.to_datetime(_g.get("dataColheitaMilho"), errors="coerce").dropna()
+    _ctx = []
+    if len(_dtp):
+        _ctx.append(f"plantio {_dtp.iloc[0]:%d/%m/%Y}")
+    if len(_dtc):
+        _ctx.append(f"colheita {_dtc.iloc[0]:%d/%m/%Y}")
+    if len(_dtp) and len(_dtc):
+        _ctx.append(f"**{(_dtc.iloc[0] - _dtp.iloc[0]).days} dias em campo**")
+    with _cB:
+        st.markdown(
+            f"<div style='padding:22px 0 0 8px;font-size:14px;color:#374151;'>"
+            f"{' · '.join(_ctx) if _ctx else 'sem datas de plantio/colheita'}"
+            f"{' · ' if _ctx else ''}{len(_dfl)} híbridos · "
+            f"média {_dfl['prod'].mean():.1f} sc/ha · umidade média {_dfl['umid'].mean():.1f}%"
+            f"</div>", unsafe_allow_html=True)
+
+    if len(_dfl) < 3:
+        st.info("Menos de 3 híbridos com umidade válida neste local.")
+    else:
+        _rot = st.checkbox("Nomear todos os híbridos", value=False, key="rot_local_umid",
+                           help="Desmarcado, só os STINE aparecem nomeados — o resto fica no "
+                                "hover, para o gráfico não virar um bloco de texto.")
+        fig_lu = go_plt.Figure()
+        _xt = np.linspace(_dfl["umid"].min(), _dfl["umid"].max(), 50)
+        _z = np.polyfit(_dfl["umid"].values, _dfl["prod"].values, 1)
+        fig_lu.add_trace(go_plt.Scatter(
+            x=_xt, y=np.poly1d(_z)(_xt), mode="lines", name="Tendência",
+            line=dict(color="#AAAAAA", width=1.5, dash="dash"), hoverinfo="skip"))
+        for _stt, _cor in COR_STATUS_PLOT.items():
+            _ds = _dfl[_dfl["status"] == _stt]
+            if _ds.empty:
+                continue
+            _mostra = _rot or (_stt == "STINE")
+            fig_lu.add_trace(go_plt.Scatter(
+                x=_ds["umid"], y=_ds["prod"],
+                mode="markers+text" if _mostra else "markers", name=_stt,
+                text=_ds["dePara"] if _mostra else None, textposition="top center",
+                textfont=dict(size=12, color="#333333", weight="bold"),
+                marker=dict(color=_cor, size=13,
+                            line=dict(color=COR_BORDA.get(_stt, "#888"), width=1.5), opacity=0.9),
+                customdata=_ds["dePara"],
+                hovertemplate=("<b>%{customdata}</b><br>Umidade: %{x:.1f}%"
+                               "<br>%{y:.1f} sc/ha<extra></extra>")))
+        fig_lu.update_layout(
+            height=500, plot_bgcolor="#F5F5F5", paper_bgcolor="#FFFFFF",
+            font=dict(family="Helvetica Neue, sans-serif", size=13, color="#111111"),
+            xaxis=dict(title=dict(text="<b>Umidade de colheita no local (%)</b>",
+                                  font=dict(size=14, color="#111111")),
+                       tickfont=dict(size=12, color="#111111", weight="bold"),
+                       gridcolor="#FFFFFF", gridwidth=1.5, zeroline=False,
+                       showline=True, linecolor="#CCCCCC"),
+            yaxis=dict(title=dict(text="<b>Produtividade no local (sc/ha)</b>",
+                                  font=dict(size=14, color="#111111")),
+                       tickfont=dict(size=12, color="#111111", weight="bold"),
+                       gridcolor="#FFFFFF", gridwidth=1.5, zeroline=False,
+                       showline=True, linecolor="#CCCCCC"),
+            legend=dict(title=dict(text="<b>Status</b>", font=dict(size=13, color="#111111")),
+                        orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+                        font=dict(size=13, color="#111111", weight="bold")),
+            margin=dict(t=60, b=60, l=70, r=40))
+        st.plotly_chart(fig_lu, use_container_width=True)
+        st.caption(
+            f"ℹ️ Todos os pontos vieram do mesmo ensaio: mesma data de plantio, mesma data de "
+            f"colheita. A diferença de umidade entre eles é diferença de ciclo. "
+            f"Reta ajustada com {len(_dfl)} híbridos — inclinação "
+            f"{_z[0]:+.1f} sc/ha por ponto percentual de umidade.")
+
+st.divider()
+
+# ════════════════════════════════════════════════════════════════════════════════
+# SEÇÃO 3C — SECAGEM RELATIVA (umidade por local)
+#
+# Por que por LOCAL: a data de plantio e a de colheita são da fazenda, iguais para
+# todos os híbridos do ensaio. Então a diferença de umidade DENTRO de um local é
+# diferença de ciclo, limpa de ambiente. Comparar a umidade média de dois híbridos
+# na rede inteira mistura ciclo com onde cada um foi testado; aqui não.
+#
+# NÃO é dry down: dry down exige medir a mesma parcela em datas sucessivas. Aqui a
+# variação vem de locais diferentes — serve para ordenar híbridos, não para estimar
+# perda de umidade por dia.
+# ════════════════════════════════════════════════════════════════════════════════
+secao_titulo(
+    "Secagem relativa",
+    "Quais híbridos acompanham o ambiente na hora de secar, e quais não?",
+    "Em cada local todos os híbridos foram plantados e colhidos no mesmo dia — então a diferença "
+    "de umidade entre eles ali é diferença de ciclo, sem efeito de ambiente. Esta seção mede como "
+    "cada híbrido responde a locais que colhem mais secos ou mais úmidos.",
+)
+
+with st.popover("ℹ️ Como interpretar · Secagem relativa", use_container_width=False):
+    st.markdown("""
+**📌 A pergunta**
+
+> **Existe híbrido que chega ao ponto de colheita mais cedo? E ele se comporta assim em todo
+> lugar, ou depende do ano e do local?**
+
+Todo produtor conhece a primeira parte: uns materiais colhem mais secos que outros. O que quase
+ninguém tem é a segunda — saber se essa vantagem se repete ou se some quando o ano muda.
+
+---
+
+**🌽 O ponto de partida, sem estatística**
+
+Num ensaio, **todo mundo é plantado no mesmo dia e colhido no mesmo dia**. A colhedora passa uma
+vez só. Então, se um híbrido sai da lavoura com 18% de umidade e o vizinho com 22%, essa
+diferença não é do solo, nem da chuva, nem da data — é do próprio material. Ele fecha o ciclo
+antes.
+
+É por isso que esta seção olha **local por local** e não pela média da rede. Na média, um híbrido
+pode parecer mais seco só porque foi testado em lugares que colheram cedo.
+
+---
+
+**🔢 As três contas, uma de cada vez**
+
+**1. Umidade do híbrido no local.** Média das parcelas daquele material naquele ensaio. Descarta
+as leituras fora da faixa de 10% a 40%, que o próprio sistema já marca como suspeitas.
+
+**2. Umidade do local.** Média de **todos** os híbridos do ensaio. É o "quão úmido esse ensaio
+colheu no geral" — o retrato do ambiente. Um local que colheu a 25% de média foi um local úmido,
+por chuva, por altitude, por atraso na colheita, não importa a razão.
+
+**3. A reta de cada híbrido.** Junta-se um ponto por local: de um lado a umidade do ensaio, do
+outro a umidade daquele material ali. Traça-se a reta que melhor passa por esses pontos. Precisa
+de pelo menos 3 locais.
+
+---
+
+**📋 O que é cada coluna da tabela**
+
+| Coluna | Em linguagem simples | Como sai da conta |
+|---|---|---|
+| **Híbrido** | o material. A cor do nome é o tipo: azul-escuro Stine, laranja concorrente, verde experimental | — |
+| **Locais** | em quantos ensaios ele entrou nesta conta | nº de locais com umidade válida. **Vermelho** = base curta, menos da metade do mais testado |
+| **b (secagem)** | **o quanto ele acompanha o ambiente.** Se o ensaio veio 2 pontos mais úmido que o normal, um híbrido com b = 1 também vem 2 pontos mais úmido; com b = 1,2 vem 2,4; com b = 0,8 vem só 1,6 | inclinação da reta |
+| **R²** | **o quanto dá para confiar na reta.** Perto de 1, os pontos estão quase em cima dela. Perto de 0, o material faz o que quer | de 0 a 1. **Vermelho** abaixo de 0,70 |
+| **Precocidade (pp)** | **quantos pontos de umidade ele fica abaixo ou acima da média do ensaio.** −2,0 quer dizer: onde o ensaio colheu a 20%, ele colheu a 18% | média da diferença entre a umidade dele e a do local. "pp" = pontos percentuais |
+| **Produtividade (sc/ha)** | quanto ele produziu, em média, nesses mesmos locais | **negrito** = acima da mediana do recorte |
+
+---
+
+**🎨 A cor, em uma frase**
+
+**Azul = mais seco e mais estável. Laranja = mais úmido e mais dependente do ambiente.**
+
+Não existe verde nem vermelho de aprovação nesta tabela, de propósito. Colher mais seco não é
+"certo": é uma característica que resolve a vida de um produtor com janela apertada e é
+indiferente para quem tem secador na fazenda.
+
+---
+
+**📐 Juntando b e precocidade**
+
+São duas perguntas diferentes e vale ler as duas:
+
+- **Precocidade** responde *"ele colhe seco?"* — é a altura da reta.
+- **b** responde *"ele colhe seco em qualquer ano?"* — é a inclinação.
+
+| Combinação | O que significa na prática |
+|---|---|
+| precocidade negativa **e** b abaixo de 1 | colhe seco e continua colhendo seco mesmo em ano úmido. É o mais previsível para programar colheita |
+| precocidade negativa **e** b acima de 1 | colhe seco em ano bom, mas em ano úmido perde a vantagem |
+| precocidade positiva **e** b abaixo de 1 | é mais tardio, mas de forma constante — dá para planejar |
+| precocidade positiva **e** b acima de 1 | mais tardio e imprevisível: em ano úmido, fica muito úmido |
+
+---
+
+**🧭 Como usar — um caso**
+
+O produtor tem uma colhedora só e quer começar cedo para liberar área.
+
+1. Na tabela, procure **precocidade negativa** — ele colhe abaixo da média do ensaio.
+2. Dentro desses, prefira **b abaixo de 1**: a vantagem não some no ano ruim.
+3. Cheque o **R²**. Se estiver em vermelho, os pontos estão espalhados e a reta não descreve nada
+   — não use esse material como argumento de secagem.
+4. Cheque **Locais**. Em vermelho, foram poucos ensaios; o número pode mudar na próxima safra.
+5. Por último, olhe a **produtividade**. Secar cedo só vale se não custar saca. Se o mais seco
+   for também o menos produtivo, a conversa vira uma escolha entre logística e rendimento — e
+   isso o produtor decide, não a tabela.
+
+---
+
+**⚠️ O que esta seção NÃO é**
+
+- **Não é dry down.** Dry down é acompanhar a mesma lavoura ao longo dos dias e medir a perda de
+  umidade. Aqui não existe medição repetida no tempo: a variação vem de locais diferentes. Serve
+  para **ordenar** híbridos, não para dizer quantos pontos de umidade se perdem por dia.
+- **Não mede ciclo em dias.** Data de plantio e de colheita são do ensaio, iguais para todos os
+  materiais — ninguém foi colhido antes. O que se mede é o estado em que cada um chegou no dia
+  comum.
+- **A inclinação absoluta carrega efeito de região e de clima.** O que se compara com segurança é
+  o b **entre híbridos**, porque todos passaram pelos mesmos locais.
+- **O índice do local muda com o filtro.** Ao comparar duas leituras, confirme que o recorte é o
+  mesmo.
+""")
+
+# ── Cálculo ────────────────────────────────────────────────────────────────────
+_MIN_LOC_SEC = 3
+
+_base_sec = ta_filtrado.copy()
+if "umidade_pct" in _base_sec.columns:
+    _base_sec = _base_sec[pd.to_numeric(_base_sec["umidade_pct"], errors="coerce").notna()]
+    # descarta leitura fora da faixa sã (o pipeline já sinaliza)
+    if "flags_produtividade" in _base_sec.columns:
+        _fl = _base_sec["flags_produtividade"].astype(str)
+        _base_sec = _base_sec[~_fl.str.contains("umidade_baixa|umidade_alta", na=False)]
+else:
+    _base_sec = _base_sec.iloc[0:0]
+
+if _base_sec.empty:
+    st.info("Sem dados de umidade para os filtros selecionados.")
+else:
+    _hl = (_base_sec.groupby(["dePara", "cod_fazenda"], as_index=False)
+           .agg(umid=("umidade_pct", "mean"),
+                prod=("sc_ha", "mean"),
+                status=("status_material", "first")))
+    _idx_loc = _hl.groupby("cod_fazenda")["umid"].mean().rename("idx")
+    _hl = _hl.join(_idx_loc, on="cod_fazenda")
+
+    _n_loc_hib = _hl.groupby("dePara")["cod_fazenda"].nunique()
+    _elegiveis = sorted(_n_loc_hib[_n_loc_hib >= _MIN_LOC_SEC].index)
+
+    if len(_elegiveis) < 2 or _hl["idx"].nunique() < 3:
+        st.info(f"Poucos locais para estimar secagem relativa — são necessários ao menos "
+                f"{_MIN_LOC_SEC} locais por híbrido e 3 locais no recorte.")
+    else:
+        # coeficientes por híbrido
+        _coef = []
+        for _h in _elegiveis:
+            _g = _hl[_hl["dePara"] == _h]
+            _x, _y = _g["idx"].values, _g["umid"].values
+            if len(_g) < _MIN_LOC_SEC or np.ptp(_x) == 0:
+                continue
+            _X = np.column_stack([np.ones(len(_y)), _x])
+            (_a, _b), *_ = np.linalg.lstsq(_X, _y, rcond=None)
+            _pred = _a + _b * _x
+            _ss_res = float(((_y - _pred) ** 2).sum())
+            _ss_tot = float(((_y - _y.mean()) ** 2).sum())
+            _coef.append(dict(
+                dePara=_h, status=_g["status"].iloc[0], b=float(_b), a=float(_a),
+                r2=(1 - _ss_res / _ss_tot) if _ss_tot > 0 else np.nan,
+                precoc=float((_g["umid"] - _g["idx"]).mean()),
+                prod=float(_g["prod"].mean()), n=int(_g["cod_fazenda"].nunique())))
+        df_sec = pd.DataFrame(_coef)
+
+        if df_sec.empty:
+            st.info("Não foi possível estimar as retas com os filtros atuais.")
+        else:
+            _stine_def = df_sec[df_sec["status"] == "STINE"]["dePara"].tolist()
+            _default = _stine_def[:5] or df_sec.sort_values("prod", ascending=False)["dePara"].head(5).tolist()
+            sel_sec = st.multiselect(
+                "Híbridos em destaque (os demais ficam em cinza, como contexto):",
+                options=sorted(df_sec["dePara"].tolist()), default=_default, key="sel_secagem",
+                max_selections=6)
+            if not sel_sec:
+                st.info("Selecione ao menos um híbrido.")
+            else:
+                _PAL_SEC = ["#9B59B6", "#E91E63", "#00BCD4", "#795548", "#FF5722", "#673AB7"]
+                _cor_de = {h: _PAL_SEC[i % len(_PAL_SEC)] for i, h in enumerate(sel_sec)}
+
+                _c1, _c2 = st.columns([3, 2])
+
+                # ── gráfico 1: retas de secagem ────────────────────────────────
+                with _c1:
+                    fig_sec = go_plt.Figure()
+                    _xs = np.linspace(_hl["idx"].min(), _hl["idx"].max(), 50)
+
+                    # contexto: todos os demais híbridos em cinza claro
+                    _outros = _hl[~_hl["dePara"].isin(sel_sec)]
+                    if not _outros.empty:
+                        fig_sec.add_trace(go_plt.Scatter(
+                            x=_outros["idx"], y=_outros["umid"], mode="markers",
+                            name="demais híbridos", legendgroup="ctx",
+                            marker=dict(color="#D5D8DC", size=6, opacity=0.55),
+                            hovertemplate="%{customdata}<br>local %{x:.1f}% · híbrido %{y:.1f}%<extra></extra>",
+                            customdata=_outros["dePara"]))
+
+                    # diagonal b=1
+                    fig_sec.add_trace(go_plt.Scatter(
+                        x=_xs, y=_xs, mode="lines", name="b = 1 (acompanha o ambiente)",
+                        line=dict(color="#9AA5B1", width=1.5, dash="dash"), hoverinfo="skip"))
+
+                    for _h in sel_sec:
+                        _g = _hl[_hl["dePara"] == _h]
+                        _r = df_sec[df_sec["dePara"] == _h].iloc[0]
+                        _cor = _cor_de[_h]
+                        fig_sec.add_trace(go_plt.Scatter(
+                            x=_g["idx"], y=_g["umid"], mode="markers", name=_h,
+                            legendgroup=_h,
+                            marker=dict(color=_cor, size=8, opacity=0.75,
+                                        line=dict(color="#FFFFFF", width=0.8)),
+                            hovertemplate=(f"<b>{_h}</b><br>local: %{{x:.1f}}%<br>"
+                                           "híbrido: %{y:.1f}%<extra></extra>")))
+                        fig_sec.add_trace(go_plt.Scatter(
+                            x=_xs, y=_r["a"] + _r["b"] * _xs, mode="lines", name=_h,
+                            legendgroup=_h, showlegend=False,
+                            line=dict(color=_cor, width=2.5),
+                            hovertemplate=(f"<b>{_h}</b><br>b = {_r['b']:.2f} · "
+                                           f"R² = {_r['r2']:.2f}<extra></extra>")))
+
+                    fig_sec.update_layout(
+                        height=520, plot_bgcolor="#F5F5F5", paper_bgcolor="#FFFFFF",
+                        font=dict(family="Helvetica Neue, sans-serif", size=13, color="#111111"),
+                        xaxis=dict(title=dict(text="<b>Umidade média do local (%)</b>",
+                                              font=dict(size=14, color="#111111")),
+                                   tickfont=dict(size=12, color="#111111", weight="bold"),
+                                   gridcolor="#FFFFFF", gridwidth=1.5, zeroline=False,
+                                   showline=True, linecolor="#CCCCCC"),
+                        yaxis=dict(title=dict(text="<b>Umidade do híbrido (%)</b>",
+                                              font=dict(size=14, color="#111111")),
+                                   tickfont=dict(size=12, color="#111111", weight="bold"),
+                                   gridcolor="#FFFFFF", gridwidth=1.5, zeroline=False,
+                                   showline=True, linecolor="#CCCCCC"),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+                                    font=dict(size=12, color="#111111")),
+                        margin=dict(t=70, b=60, l=70, r=20))
+                    st.plotly_chart(fig_sec, use_container_width=True)
+                    st.caption("ℹ️ Cada ponto é um híbrido em um local. Cinza = demais híbridos do "
+                               "recorte, como contexto. Tracejado = diagonal b = 1.")
+
+                # ── gráfico 2: onde cada híbrido cai ──────────────────────────
+                # Trocado o dot plot de duas colunas por um plano: com 35 híbridos
+                # aquilo virava uma lista de pontos sem eixo legível. Aqui b e
+                # produtividade são os dois eixos, os quadrantes têm nome em
+                # português e só os destacados são rotulados.
+                with _c2:
+                    _med_prod = float(df_sec["prod"].median())
+                    _dst = df_sec[df_sec["dePara"].isin(sel_sec)]
+                    _ctx = df_sec[~df_sec["dePara"].isin(sel_sec)]
+
+                    fig_co = go_plt.Figure()
+                    fig_co.add_vline(x=1, line=dict(color="#9AA5B1", width=1.5, dash="dash"))
+                    fig_co.add_hline(y=_med_prod, line=dict(color="#9AA5B1", width=1.5, dash="dash"))
+
+                    if not _ctx.empty:
+                        fig_co.add_trace(go_plt.Scatter(
+                            x=_ctx["b"], y=_ctx["prod"], mode="markers", showlegend=False,
+                            marker=dict(color="#D5D8DC", size=9,
+                                        line=dict(color="#FFFFFF", width=1)),
+                            customdata=np.stack([_ctx["dePara"], _ctx["r2"], _ctx["n"]], axis=-1),
+                            hovertemplate=("<b>%{customdata[0]}</b><br>b = %{x:.2f} · "
+                                           "R² = %{customdata[1]:.2f}<br>%{y:.1f} sc/ha · "
+                                           "%{customdata[2]} locais<extra></extra>")))
+                    if not _dst.empty:
+                        fig_co.add_trace(go_plt.Scatter(
+                            x=_dst["b"], y=_dst["prod"], mode="markers+text", showlegend=False,
+                            text=_dst["dePara"], textposition="top center",
+                            textfont=dict(size=12, color="#111111", weight="bold"),
+                            marker=dict(color=[_cor_de[h] for h in _dst["dePara"]], size=15,
+                                        line=dict(color="#FFFFFF", width=1.5)),
+                            customdata=np.stack([_dst["r2"], _dst["n"], _dst["precoc"]], axis=-1),
+                            hovertemplate=("<b>%{text}</b><br>b = %{x:.2f} · "
+                                           "R² = %{customdata[0]:.2f}<br>%{y:.1f} sc/ha · "
+                                           "%{customdata[1]} locais<br>"
+                                           "precocidade %{customdata[2]:+.1f} pp<extra></extra>")))
+
+                    # nomes dos quadrantes, em português
+                    _xmin, _xmax = df_sec["b"].min(), df_sec["b"].max()
+                    _ymin, _ymax = df_sec["prod"].min(), df_sec["prod"].max()
+                    _pad_x, _pad_y = (_xmax - _xmin) * 0.06, (_ymax - _ymin) * 0.08
+                    for _tx, _ty, _txt, _anc in [
+                        (_xmin - _pad_x / 2, _ymax + _pad_y / 2, "produz e é previsível", "left"),
+                        (_xmax + _pad_x / 2, _ymax + _pad_y / 2, "produz, mas depende da janela", "right"),
+                    ]:
+                        fig_co.add_annotation(x=_tx, y=_ty, text=f"<b>{_txt}</b>", showarrow=False,
+                                              xanchor=_anc, font=dict(size=12, color="#6B7280"))
+                    fig_co.add_annotation(
+                        x=1, y=_ymin - _pad_y, text="acompanha o ambiente", showarrow=False,
+                        yanchor="top", font=dict(size=11.5, color="#6B7280"))
+
+                    fig_co.update_layout(
+                        title=dict(text="<b>Quem seca junto com o ambiente, e quem produz</b>",
+                                   font=dict(size=15, color="#111111"), x=0, xanchor="left"),
+                        height=520, plot_bgcolor="#F5F5F5", paper_bgcolor="#FFFFFF",
+                        font=dict(family="Helvetica Neue, sans-serif", size=13, color="#111111"),
+                        xaxis=dict(
+                            title=dict(text="← umidade mais estável &nbsp;&nbsp;|&nbsp;&nbsp; "
+                                            "amplifica o ambiente →",
+                                       font=dict(size=13, color="#111111")),
+                            tickfont=dict(size=12, color="#111111", weight="bold"),
+                            gridcolor="#FFFFFF", gridwidth=1.5, zeroline=False,
+                            showline=True, linecolor="#CCCCCC",
+                            range=[_xmin - _pad_x * 2, _xmax + _pad_x * 2]),
+                        yaxis=dict(
+                            title=dict(text="<b>Produtividade média (sc/ha)</b>",
+                                       font=dict(size=13, color="#111111")),
+                            tickfont=dict(size=12, color="#111111", weight="bold"),
+                            gridcolor="#FFFFFF", gridwidth=1.5, zeroline=False,
+                            showline=True, linecolor="#CCCCCC",
+                            range=[_ymin - _pad_y * 2.2, _ymax + _pad_y * 2]),
+                        margin=dict(t=80, b=70, l=70, r=30))
+                    st.plotly_chart(fig_co, use_container_width=True)
+                    st.caption(
+                        f"ℹ️ Cada ponto é um híbrido. Em cinza, os que não estão em destaque — "
+                        f"o nome aparece ao passar o mouse. A vertical marca **b = 1**, o híbrido "
+                        f"que varia igual ao ambiente; a horizontal marca a **mediana de "
+                        f"produtividade do recorte ({_med_prod:.1f} sc/ha)**. O canto superior "
+                        f"esquerdo é a posição mais confortável: produz acima da mediana e a "
+                        f"umidade não depende do ambiente.")
+
+                # ── tabela de apoio ────────────────────────────────────────────
+                # Em HTML, não em AgGrid: a mesma matriz de células desenha a tela e
+                # gera o Excel, então o arquivo sai idêntico ao que se vê. Com AgGrid
+                # a tela vinha de cellStyle em JS e o arquivo de openpyxl — dois
+                # caminhos que divergem sem avisar (e divergiam: o Excel saía branco).
+                _med_prod_tab = float(df_sec["prod"].median())
+                _n_ref = int(df_sec["n"].max())
+
+                _c_ord, _ = st.columns([2, 3])
+                with _c_ord:
+                    _ordem_tab = st.selectbox(
+                        "Ordenar por",
+                        ["Secagem (b), do mais estável ao mais dependente",
+                         "Precocidade, do mais seco ao mais úmido",
+                         "Produtividade, da maior para a menor",
+                         "Nome do híbrido"],
+                        key="ord_tab_secagem")
+                _chave = {"Secagem (b), do mais estável ao mais dependente": ("b", True),
+                          "Precocidade, do mais seco ao mais úmido": ("precoc", True),
+                          "Produtividade, da maior para a menor": ("prod", False),
+                          "Nome do híbrido": ("dePara", True)}[_ordem_tab]
+                _dt = df_sec.sort_values(_chave[0], ascending=_chave[1])
+
+                # Uma linguagem de cor só: AZUL = mais seco / mais estável ·
+                # LARANJA = mais úmido / mais dependente. Verde e vermelho de
+                # aprovação ficaram de fora — colher mais seco não é "certo", é uma
+                # característica. Vermelho fica reservado ao que é aviso de fragilidade.
+                _ESC_B = [(0.85, "#B7D7EF"), (0.97, "#DCEBF7"), (1.03, "#F0F1F3"),
+                          (1.15, "#FBE2CC"), (99, "#F4B184")]
+                _ESC_P = [(-1.5, "#B7D7EF"), (-0.3, "#DCEBF7"), (0.3, "#F0F1F3"),
+                          (1.5, "#FBE2CC"), (99, "#F4B184")]
+
+                def _bg(v, escala):
+                    for _lim, _c in escala:
+                        if v <= _lim:
+                            return _c
+                    return escala[-1][1]
+
+                _COR_ST = {"CHECK": "#C46A3A", "STINE": "#1A4F7A",
+                           "EXP": "#009900", "DP2": "#7AAF6A"}
+                _headers = ["Híbrido", "Locais", "b (secagem)", "R²",
+                            "Precocidade (pp)", "Produtividade (sc/ha)"]
+                _linhas = []
+                for _r in _dt.itertuples():
+                    _linhas.append([
+                        cel(_r.dePara, cor=_COR_ST.get(_r.status, "#1A1A1A"), bold=True),
+                        cel(_r.n, "num0", align="center",
+                            cor="#C0201E" if _r.n < _n_ref * 0.5 else "#6B7280",
+                            bold=_r.n < _n_ref * 0.5),
+                        cel(f"{_r.b:.2f}".replace(".", ","), align="center", bold=True,
+                            bg=_bg(_r.b, _ESC_B)),
+                        cel(f"{_r.r2:.2f}".replace(".", ","), align="center",
+                            cor="#C0201E" if _r.r2 < 0.70 else "#6B7280",
+                            bold=_r.r2 < 0.70),
+                        cel(_r.precoc, "sinal1", align="center", bold=True,
+                            bg=_bg(_r.precoc, _ESC_P)),
+                        cel(_r.prod, "num1", align="center",
+                            bold=_r.prod > _med_prod_tab,
+                            cor="#1A1A1A" if _r.prod > _med_prod_tab else "#6B7280"),
+                    ])
+
+                st.markdown("###### Todos os híbridos")
+                render_tabela(
+                    _headers, _linhas, "secagem_relativa", "exp_secagem",
+                    largura_1a=200, altura_max=560,
+                    legenda=[("#B7D7EF", "seca mais e varia menos que o ambiente", "bg"),
+                             ("#F0F1F3", "acompanha o ambiente", "bg"),
+                             ("#F4B184", "fica mais úmido e depende mais do ambiente", "bg"),
+                             ("#C0201E", "número frágil — reta fraca ou poucos locais", "txt"),
+                             ("#1A4F7A", "STINE", "txt"), ("#C46A3A", "concorrente", "txt"),
+                             ("#009900", "experimental", "txt")])
+                st.caption(
+                    "ℹ️ **Azul = mais seco e mais estável · laranja = mais úmido e mais "
+                    "dependente do ambiente.** Não há verde nem vermelho de aprovação: colher "
+                    "mais seco não é melhor nem pior, é uma característica que serve para um "
+                    "produtor e não serve para outro. "
+                    f"**R² em vermelho** abaixo de 0,70 — a reta explica pouco. **Locais em "
+                    f"vermelho** — menos da metade da cobertura do híbrido mais testado "
+                    f"({_n_ref} locais). **Produtividade em negrito** — acima da mediana do "
+                    f"recorte ({_med_prod_tab:.1f} sc/ha). Não é dry down: ver o modal da seção.")
 
 st.divider()
 
