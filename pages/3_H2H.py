@@ -52,10 +52,10 @@ st.markdown("""
 # Constantes
 # ─────────────────────────────────────────────────────────────────────────────
 STATUS_P1 = ["STINE", "EXP", "DP2"]     # pool de "Produto 1" (materiais Stine)
-# Universo de adversários das abas agregadas (Locais e Todos os Materiais): só os
-# comerciais. É a mesma régua do racional de posicionamento — quem disputa mercado
-# com a linha são os CHECK. Fixo de propósito: assim o aproveitamento dessas abas
-# não muda conforme o filtro lateral e é reprodutível entre sessões.
+# PADRÃO de adversário: os comerciais. É a régua do racional de posicionamento — quem disputa
+# mercado com a linha são os CHECK. Serve de valor inicial do filtro lateral e de reserva quando
+# nada está marcado; NÃO é mais fixo nas abas agregadas, que passaram a seguir a seleção da
+# lateral (antes o filtro existia, aparecia na tela e não tinha efeito nelas).
 STATUS_ADVERSARIO = ("CHECK",)
 EMPATE_MARGEM = 1.0                      # ± sc/ha: dentro disso é empate técnico
 SAFRA_PADRAO = ("25/26", "2025/26")      # aceita os dois formatos de rótulo
@@ -425,14 +425,22 @@ def caracterizar_locais(df_base: pd.DataFrame, status_linha: tuple, status_adv: 
 
     PLACAR (confrontos, vitórias, aproveitamento, diferença média) — todos os
     duelos linha × adversário naquele local, com a mesma margem de empate do resto
-    da página.
+    da página. O adversário é o que a barra lateral tiver marcado.
+
+    CONTRATO: uma linha por `cod_fazenda`, porque o chamador indexa por ele (`set_index`/`map`).
+    O pareamento interno usa (local, safra) — ver `cruzar_linha` —, mas a saída volta agregada
+    por local. Isso é seguro enquanto o código do local embutir o ano, o que é o caso hoje
+    (74 locais nas duas safras, nenhum repetido). Se um código passar a repetir, o `set_index`
+    do chamador acusa índice duplicado em vez de misturar em silêncio.
     """
     d = df_base.dropna(subset=["sc_ha"]).copy()
     if d.empty:
         return pd.DataFrame()
 
-    # média por (material, local): mesma agregação de cruzar_por_local
-    med = d.groupby(["dePara", "status_material", "cod_fazenda"], as_index=False)["sc_ha"].mean()
+    # média por (material, local): mesma agregação de cruzar_por_local. A safra entra na chave
+    # pelo mesmo motivo do cruzar_linha: parear só por local depende de o código embutir o ano.
+    _chave = ["cod_fazenda", "safra"] if "safra" in d.columns else ["cod_fazenda"]
+    med = d.groupby(["dePara", "status_material"] + _chave, as_index=False)["sc_ha"].mean()
 
     # --- ambiente ---
     amb = med.groupby("cod_fazenda").agg(
@@ -450,7 +458,7 @@ def caracterizar_locais(df_base: pd.DataFrame, status_linha: tuple, status_adv: 
     if d1.empty or d2.empty:
         duelos = pd.DataFrame(columns=["cod_fazenda", "_conf", "_vit", "_emp", "_der", "_dif"])
     else:
-        m = d1.merge(d2, on="cod_fazenda", suffixes=("_1", "_2"))
+        m = d1.merge(d2, on=_chave, suffixes=("_1", "_2"))
         m = m[m["dePara_1"] != m["dePara_2"]].copy()
         m["_d"] = m["sc_ha_1"] - m["sc_ha_2"]
         duelos = m.groupby("cod_fazenda").apply(
@@ -487,14 +495,21 @@ def cruzar_linha(df_base: pd.DataFrame, status_linha: tuple, status_adv: tuple) 
 
     Uma única passagem produz as quatro tabelas do panorama: basta filtrar os
     locais e agrupar de formas diferentes. Não depende de botão.
+
+    A chave do pareamento é (local, SAFRA). Hoje o código do local já embute o ano — os 74
+    locais das duas safras não têm um único código repetido —, então parear só por local
+    daria o mesmo resultado. Mas isso é convenção de nome, não garantia: no dia em que um
+    código se repetir, parear só por local cruzaria 24/25 com 25/26 sem avisar, e o confronto
+    perderia o sentido (mesmo local, ano diferente, clima diferente).
     """
     d = df_base.dropna(subset=["sc_ha"])
-    med = d.groupby(["dePara", "status_material", "cod_fazenda"], as_index=False)["sc_ha"].mean()
+    _chave = ["cod_fazenda", "safra"] if "safra" in d.columns else ["cod_fazenda"]
+    med = d.groupby(["dePara", "status_material"] + _chave, as_index=False)["sc_ha"].mean()
     d1 = med[med["status_material"].isin(status_linha)]
     d2 = med[med["status_material"].isin(status_adv)]
     if d1.empty or d2.empty:
         return pd.DataFrame(columns=["material", "adversario", "cod_fazenda", "dif", "res"])
-    m = d1.merge(d2, on="cod_fazenda", suffixes=("_1", "_2"))
+    m = d1.merge(d2, on=_chave, suffixes=("_1", "_2"))
     m = m[m["dePara_1"] != m["dePara_2"]].copy()
     m["dif"] = m["sc_ha_1"] - m["sc_ha_2"]
     m["res"] = np.select([m["dif"] > EMPATE_MARGEM, m["dif"] < -EMPATE_MARGEM],
@@ -648,8 +663,11 @@ with tab0:
                  "linha Stine contra os concorrentes comerciais em cada local.",
         )
         _linha_status = ("STINE",)
+        # adversário da lateral também aqui: as colunas de placar deste toggle passam a
+        # concordar com as abas seguintes em vez de ficarem presas em CHECK
+        _adv_loc = tuple(sorted(status_p2_sel)) or STATUS_ADVERSARIO
         _car = caracterizar_locais(ta_raw, _linha_status,
-                                   STATUS_ADVERSARIO).set_index("cod_fazenda")
+                                   _adv_loc).set_index("cod_fazenda")
         if mostrar_placar:
             tab_loc["Amplitude"] = tab_loc["Código"].map(_car["_amplitude"]).round(1)
             tab_loc["Confrontos"] = tab_loc["Código"].map(_car["_conf"]).astype("Int64")
@@ -705,7 +723,10 @@ Classificação, Análise por Local, Desvios por Ambiente, esta e Todos os Mater
 | **Dif. sc/ha** *(toggle)* | por quanto a linha ganha ou perde ali | média de `(material Stine − concorrente)` em todos os duelos do local |
 
 Cada linha é um **local**, nunca uma parcela e nunca um híbrido. As colunas do toggle usam
-sempre **STINE contra CHECK**, independentemente do filtro Status do Adversário da lateral.
+**STINE** contra quem estiver marcado em Status do Adversário (Prod. 2) na barra lateral — o
+padrão é CHECK, os concorrentes comerciais. Já a **média** e a **amplitude** do local não seguem
+esse filtro: são calculadas sobre todos os híbridos avaliados ali, porque descrevem o ambiente e
+não o confronto.
 
 ---
 
@@ -1721,18 +1742,30 @@ with tabL:
         "Status na coluna Material", _st_disp,
         default=[s for s in ["STINE"] if s in _st_disp] or _st_disp[:1],
         key="tabL_status_linha",
-        help="Quem entra como 'linha'. Do outro lado do confronto ficam sempre os "
-             "concorrentes comerciais (CHECK).")
+        help="Quem entra como 'linha'. Do outro lado ficam os status marcados em Status do "
+             "Adversário (Prod. 2) na barra lateral — por padrão, os comerciais (CHECK).")
     if not _status_linha:
         _status_linha = [s for s in ["STINE"] if s in _st_disp] or _st_disp[:1]
     _tup_linha = tuple(sorted(_status_linha))
 
-    _cruz_all = cruzar_linha(ta_raw, _tup_linha, STATUS_ADVERSARIO)
+    # ADVERSÁRIO: quem a lateral escolheu, não uma constante. Antes esta aba fixava CHECK e o
+    # filtro "Status do Adversário (Prod. 2)" não a alterava — as outras abas mudavam e esta não,
+    # e a mensagem de vazio ainda mandava conferir justamente esse filtro. `cruzar_linha` é
+    # cacheada por argumento, então passar a seleção mantém o cache (uma entrada por combinação).
+    _tup_adv = tuple(sorted(status_p2_sel))
+    _cruz_all = cruzar_linha(ta_raw, _tup_linha, _tup_adv) if _tup_adv else pd.DataFrame()
     _ativos = set(ta_filtrado["cod_fazenda"].dropna().unique())
-    _cruz = _cruz_all[_cruz_all["cod_fazenda"].isin(_ativos)].copy()
+    _cruz = (_cruz_all[_cruz_all["cod_fazenda"].isin(_ativos)].copy()
+             if not _cruz_all.empty else _cruz_all)
 
     if _cruz.empty:
-        st.info("Nenhum confronto com os filtros atuais. Verifique o Status do Adversário na lateral.")
+        if not _tup_adv:
+            st.info("Nenhum status marcado em **Status do Adversário (Prod. 2)** na barra lateral: "
+                    "sem adversário não há confronto. Marque ao menos um.")
+        else:
+            st.info(f"Nenhum confronto entre a linha ({', '.join(_tup_linha)}) e "
+                    f"{', '.join(_tup_adv)} nos locais do recorte atual. Os dois lados precisam "
+                    f"ter sido avaliados no MESMO local para existir duelo.")
     else:
         # ── quem entra na tabela ────────────────────────────────────────────
         # Vazio = todos, mesma convenção dos filtros da barra lateral.
@@ -1802,8 +1835,9 @@ with tabL:
         _leitura = st.radio("Leitura", ["Placar", "Matriz", "Por ambiente", "Local a local"],
                             horizontal=True, key="tabL_leitura", label_visibility="collapsed")
 
-        st.caption("Adversários: apenas os concorrentes comerciais (CHECK). É fixo nesta aba — "
-                   "o filtro Status do Adversário da barra lateral não a altera.")
+        st.caption(f"Adversários: **{', '.join(_tup_adv)}** — quem está marcado em Status do "
+                   f"Adversário (Prod. 2) na barra lateral. Locais, safra e demais filtros da "
+                   f"lateral também valem aqui.")
 
         _COMUM = """
 **📌 O que este painel responde**
@@ -1817,16 +1851,38 @@ As outras abas olham um material por vez. Esta olha a linha como portfólio.
 **🔢 O cálculo, comum às quatro leituras**
 
 1. Em cada **local**, tira-se a média das parcelas de cada material.
-2. Cada par (material da linha × adversário) que dividiu um local é **um confronto**.
+2. Cada par (material da linha × adversário) que dividiu um local é **um confronto**. Local e
+   safra formam a chave: o mesmo local em safras diferentes não é o mesmo ambiente.
 3. `diferença = média do material − média do adversário`, naquele local.
 4. Acima de **+1,0 sc/ha** é vitória · entre −1,0 e +1,0 é **empate** · abaixo é derrota.
 5. **Aproveitamento = vitórias ÷ confrontos.** O empate **não vale meio ponto**: fica fora do
    numerador e dentro do denominador.
-6. **Do lado adversário ficam só os comerciais (CHECK)**, sempre — é o universo de disputa de
-   mercado. O seletor de status muda quem está na coluna Material, nunca o adversário.
+6. **Quem entra de cada lado vem dos filtros:** o seletor acima define a coluna Material e o
+   **Status do Adversário (Prod. 2)**, na barra lateral, define o outro lado. O padrão é CHECK,
+   o universo de disputa de mercado — mas se você marcar EXP ou DP2, o confronto passa a ser
+   contra eles, aqui e nas outras abas.
 
 > Por isso o total de confrontos é muito maior que o de locais: são materiais × adversários ×
 locais em comum.
+
+---
+
+**🎚️ O que segue os filtros e o que não segue**
+
+Tudo que é **resultado** segue: os locais do recorte, a safra, o status do adversário, e os dois
+seletores de material e adversário desta aba. Se um número muda de valor conforme a seleção, ele
+seguiu o filtro.
+
+Duas coisas **não** seguem, de propósito, porque são **régua** e não resultado:
+
+| Referência | Como é calculada | Por quê |
+|---|---|---|
+| **Média e amplitude do local** | todos os híbridos avaliados ali, inclusive os fora do filtro | é atributo do ambiente. Recalculada dentro do recorte, mudaria conforme quem você está olhando |
+| **Faixas de classificação** (>75 · 56–75 · 46–55 · até 45) | limites fixos do painel | são o mesmo critério em todas as telas; virar quantil do recorte tornaria "Superior" relativo à seleção |
+
+Os **terços de ambiente** da leitura "Por ambiente" são a exceção que confirma a regra: eles são
+recortados **dentro** da seleção ativa, e é por isso que "Produtividade Baixa" significa o terço
+inferior daquele recorte, não da rede.
 
 ---
 """
@@ -1840,8 +1896,11 @@ locais em comum.
   dão o mesmo número — por isso a diferença média está sempre ao lado.
 - **Recortes diferentes não se comparam.** Mudou o filtro, mudaram os adversários e os locais.
 - **Os locais vêm da barra lateral**, os mesmos das outras quatro abas.
-- **O universo de adversários é fixo em CHECK.** O filtro Status do Adversário da lateral vale
-  para as três primeiras abas, não para esta — aqui o número precisa ser reprodutível.
+- **O universo de adversários também vem da lateral** (Status do Adversário, padrão CHECK) e vale
+  igual em todas as abas. Trocar CHECK por EXP muda a pergunta: deixa de ser disputa de mercado e
+  passa a ser comparação interna de pipeline. Registre qual estava marcado ao citar um número.
+- **Média e amplitude do local são régua, não resultado**: saem da base inteira e não mudam com o
+  filtro, de propósito. Aproveitamento, confrontos e diferença média são resultado, e mudam.
 - **Os dois seletores acima da tabela são desta aba.** Escolher quais materiais aparecem é
   inofensivo — muda só quais linhas são desenhadas. **Escolher adversários muda o denominador de
   todos**: com os mais duros de fora, o aproveitamento sobe sozinho. Por isso aparece um aviso
@@ -2268,7 +2327,7 @@ no local, vermelho até 20%.
                 _cr = cruzar_por_local(_p1f, _p2f)
                 if not _cr.empty:
                     _cr = _cr[_cr["cod_fazenda"].isin(_locais_tela)
-                              & _cr["status_material_2"].isin(STATUS_ADVERSARIO)
+                              & _cr["status_material_2"].isin(_tup_adv)
                               & _cr["dePara_2"].isin(_sel_adv)]
                     _d = _cr["sc_ha_1"] - _cr["sc_ha_2"]
                     _vb, _nb = int((_d > EMPATE_MARGEM).sum()), len(_cr)
@@ -2290,7 +2349,9 @@ no local, vermelho até 20%.
                                  align="center")])
 
             # linha inteira pelo caminho da aba Locais
-            _carc = caracterizar_locais(ta_raw, _tup_linha, STATUS_ADVERSARIO)
+            # mesmo adversário da tela: com a constante, a auditoria acusaria divergência
+            # sempre que a lateral tivesse algo diferente de CHECK marcado
+            _carc = caracterizar_locais(ta_raw, _tup_linha, _tup_adv)
             _carc = _carc[_carc["cod_fazenda"].isin(_locais_tela)]
             _v_loc, _n_loc_conf = int(_carc["_vit"].fillna(0).sum()), int(_carc["_conf"].fillna(0).sum())
             _v_aqui, _n_aqui = int((_cruz["res"] == "V").sum()), len(_cruz)
