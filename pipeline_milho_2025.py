@@ -648,7 +648,7 @@ def _gold_av2(tb_av2: pd.DataFrame) -> pd.DataFrame:
 #   e florescimento são idênticas entre safras, então o 2024 importa estas funções.
 # av4 (produtividade): a ESTRUTURA é comum (produtividade Caminho A → detalhe das
 #   subamostras → consolidada + população + Caminho B), mas as réguas mudam por safra
-#   (peso g×kg, PMG ÷10, metragem, nº de pontos de estande). O que muda vem por
+#   (peso g×kg, metragem, nº de pontos de estande). O que muda vem por
 #   parâmetro/constante; a leitura de colunas de estande é explícita por safra.
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -717,7 +717,7 @@ def _gold_av3_detalhe(tb_av3: pd.DataFrame) -> pd.DataFrame:
 
 # ── av4: produtividade (Caminho A) + estande/detalhe + consolidada (Caminho B) ─
 # Réguas que MUDAM por safra vêm por função (não flag), porque são CONDICIONAIS:
-# 2024 aplica redes de segurança a valores suspeitos (peso ≥100→÷1000; PMG >40→÷10),
+# 2024 aplica rede de segurança ao peso (≥100→÷1000); o PMG NÃO tem régua (ver regua_pmg_2024),
 # enquanto 2025 usa o valor direto. Defaults = 2025 (identidade). O 2024 passa suas réguas.
 MAPA_PERDAS = {"acamadas": "NumPlantasAcamadas", "quebradas": "NumPlantasQuebradas",
                "dominadas": "NumPlantasDominadas", "colmo_podre": "ColmoPodre"}
@@ -765,9 +765,25 @@ def regua_pmg_2025(pmg: pd.Series) -> pd.Series:
 
 
 def regua_pmg_2024(pmg: pd.Series) -> pd.Series:
-    """2024: rede de segurança — PMG >40 tem vírgula deslocada (231 = 23,1) → ÷10.
-    Valores ≤40 já estão corretos. Condicional, não incondicional."""
-    return pmg.where(pmg <= 40, pmg / 10.0)
+    """2024: PMG já vem correto em gramas (mediana ~352 g) — identidade, igual a 2025.
+
+    CORRIGIDO (era `pmg.where(pmg <= 40, pmg / 10.0)`). A régua antiga supunha vírgula
+    deslocada ("231 = 23,1") e dividia por 10 todo valor >40. A premissa estava errada:
+    231 g é PMG de milho perfeitamente plausível — é grão de milho, não de soja. O efeito
+    era um PMG dez vezes menor na safra 24/25 (mediana 35 g, faixa 19–51).
+
+    Três evidências de que os valores crus já estão certos:
+      1. ordem de grandeza — 2025, sem régua nenhuma, dá mediana 341 g; 2024 cru dá 352 g;
+      2. os componentes do Caminho B (fileiras 16,5 e grãos/fileira 33,6) são idênticos entre
+         as safras, então só o PMG estava fora de escala;
+      3. o Caminho B fecha: com a régua antiga a estimativa saía em 11% da produtividade
+         medida (razão 0,115); sem ela, 1,15 — mesma família da razão de 2025 (1,34).
+    Todos os 1.159 valores de 2024, multiplicados por 10, caem na faixa plausível 150–600 g.
+
+    A função fica (mesmo sendo identidade) porque o pipeline_milho_2024 a importa por nome e
+    porque o par régua-por-safra é o contrato do núcleo compartilhado.
+    """
+    return pmg
 
 
 def _gold_av4_produtividade(tb_av4: pd.DataFrame, *,
