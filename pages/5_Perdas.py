@@ -37,6 +37,60 @@ COR_STATUS_PLOT = {
 }
 COR_TEXTO_STATUS = {"CHECK": "#1A1A1A", "STINE": "#FFFFFF", "EXP": "#1A1A1A",
                     "DP2": "#1A1A1A", "": "#000000"}
+# Cores das três famílias de coluna. Uma fonte só para a tela (CSS) e para o Excel.
+COR_GRUPO = {"perdas": "#1F5673", "qualidade": "#5B4A2E", "fenomenos": "#7A3B4E"}
+COR_CAB_BASE = "#4A4A4A"
+
+# ── Cor por faixa de valor: escrita uma vez, lida pelo AgGrid e pelo Excel ─────
+# Cada regra é (operador, limite, (fundo, texto)); operador None = "vale sempre" (regra final).
+# Sem regra final, valor que não casa fica sem cor.
+_PASTEL_BOM, _PASTEL_RUIM = ("#D5F5D5", "#1A1A1A"), ("#FDDCDE", "#1A1A1A")
+_VERDE, _VERDE_CLARO = ("#1E7A34", "#FFFFFF"), ("#70C96E", "#1A1A1A")
+_AMARELO, _VERMELHO, _VINHO = ("#FFD600", "#1A1A1A"), ("#E63946", "#FFFFFF"), ("#8B0000", "#FFFFFF")
+_SEM_FORTE, _SEM_MEDIO, _SEM_LEVE = ("#C8201E", "#FFFFFF"), ("#E8850D", "#1A1A1A"), ("#F6D202", "#1A1A1A")
+
+FAIXA_PERDE_MENOS = [(">", 0, _PASTEL_BOM)]
+FAIXA_PERDE_MAIS = [(">", 0, _PASTEL_RUIM)]
+# ATENÇÃO ao sinal: aqui delta NEGATIVO é bom (perdeu menos que a referência) — inverso da nota
+FAIXA_DELTA_PERDA = [("<", 0, _VERDE), (">", 0, _VERMELHO), (None, None, _AMARELO)]
+FAIXA_COLAPSO_N = [(">", 0, _VERMELHO), (None, None, _PASTEL_BOM)]
+FAIXA_OK_N = [(">", 0, _VERDE_CLARO)]
+FAIXA_PCT_COLAPSO = [(">=", 50, _VINHO), (">=", 20, _VERMELHO), (">", 0, _AMARELO),
+                     (None, None, _PASTEL_BOM)]
+FAIXA_MAX_PERDA = [(">=", 25, _SEM_FORTE), (">=", 15, _SEM_MEDIO), (">=", 8, _SEM_LEVE),
+                   (None, None, _PASTEL_BOM)]
+FAIXA_DELTA_MAX = [(">=", 20, _SEM_FORTE), (">=", 10, _SEM_MEDIO)]
+FAIXA_CRITICOS = [(">", 0, _PASTEL_RUIM), (None, None, _PASTEL_BOM)]
+
+_OPS_FAIXA = {">=": lambda v, l: v >= l, ">": lambda v, l: v > l,
+              "<=": lambda v, l: v <= l, "<": lambda v, l: v < l}
+
+
+def cor_da_faixa(valor, faixas):
+    """(fundo, texto) para o valor, ou None se não for número ou nenhuma regra casar."""
+    try:
+        v = float(valor)
+    except (TypeError, ValueError):
+        return None
+    if v != v:
+        return None
+    for op, limite, cor in faixas:
+        if op is None or _OPS_FAIXA[op](v, limite):
+            return cor
+    return None
+
+
+def js_faixa(faixas):
+    """cellStyle do AgGrid gerado das mesmas regras — NOVA instância a cada chamada, porque
+    reusar o mesmo objeto JsCode em duas colunas perde o estilo."""
+    _l = []
+    for op, limite, (bg, fg) in faixas:
+        _ret = f"return{{background:'{bg}',color:'{fg}',fontWeight:'700'}};"
+        _l.append(_ret if op is None else f"if(v{op}{limite}){_ret}")
+    return JsCode("function(p){var v=p.value;if(v===null||v===undefined||v==='')return{};"
+                  + "".join(_l) + "return{};}")
+
+
 COR_BORDA = {
     "CHECK": "#C46A3A",
     "STINE": "#1A4F7A",
@@ -205,7 +259,16 @@ def ag_table(df, height=400, estilos_col=None, renderers_col=None):
 
 
 # ── Helper exportar Excel (mesmo padrão da soja) ──────────────────────────────
-def exportar_excel(df, nome_arquivo="tabela.xlsx", label="⬇️ Exportar Excel", key=None):
+def exportar_excel(df, nome_arquivo="tabela.xlsx", label="⬇️ Exportar Excel", key=None,
+                   faixas_cor=None):
+    """Export genérico da página, no mesmo padrão visual do painel.
+
+    `faixas_cor`: {coluna: faixas} para as colunas que a tela colore por limite de valor
+    (ver FAIXA_* no topo). Passe as MESMAS constantes usadas no cellStyle do AgGrid.
+
+    (O resumo de perdas tem export próprio — `exportar_perdas_excel` —, porque lá a linha é
+    pintada pelo status e o cabeçalho é dividido em famílias.)
+    """
     import io
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -214,18 +277,28 @@ def exportar_excel(df, nome_arquivo="tabela.xlsx", label="⬇️ Exportar Excel"
     wb = openpyxl.Workbook()
     ws = wb.active
     df = df.reset_index(drop=True)
+    # o AgGrid acrescenta `::auto_unique_id::` ao DataFrame que recebe; sem isso a coluna
+    # interna vaza para o arquivo, porque o export vem depois da tabela na página
+    df = df.drop(columns=[c for c in df.columns if str(c).startswith("::")], errors="ignore")
 
+    faixas_cor = faixas_cor or {}
     thin = Side(style="thin", color="CCCCCC")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    # alinhamento como no AgGrid: texto à esquerda, número à direita
+    _alin = ["right" if pd.api.types.is_numeric_dtype(df[c]) else "left" for c in df.columns]
 
     for ci, col in enumerate(df.columns, 1):
         cell = ws.cell(row=1, column=ci, value=str(col))
-        cell.font = Font(bold=True, name="Arial", size=10, color="1A1A1A")
-        cell.fill = PatternFill("solid", start_color="F2F2F2")
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        if str(col).lstrip()[:1] in ("=", "+", "-", "@"):
+            cell.data_type = "s"      # senão o openpyxl grava como fórmula e o título some
+        cell.font = Font(bold=True, name="Arial", size=10, color="FFFFFF")
+        cell.fill = PatternFill("solid", start_color=COR_CAB_BASE.lstrip("#"))
+        cell.alignment = Alignment(horizontal=_alin[ci - 1], vertical="center", wrap_text=True)
         cell.border = border
-        ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = max(12, len(str(col)) + 2)
-    ws.row_dimensions[1].height = 28
+        _maior = max([len(str(col))] +
+                     [len(str(v)) for v in df[col].head(200).tolist() if v is not None])
+        ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = min(40, max(11, _maior + 3))
+    ws.row_dimensions[1].height = 30
 
     for ri, row_data in enumerate(df.itertuples(index=False), start=2):
         for ci, val in enumerate(row_data, 1):
@@ -239,9 +312,23 @@ def exportar_excel(df, nome_arquivo="tabela.xlsx", label="⬇️ Exportar Excel"
             except (TypeError, ValueError):
                 pass
             cell = ws.cell(row=ri, column=ci, value=val)
+            if isinstance(val, str) and val.lstrip()[:1] in ("=", "+", "-", "@"):
+                cell.data_type = "s"
             cell.font = Font(name="Arial", size=10)
-            cell.alignment = Alignment(horizontal="left" if ci == 1 else "center", vertical="center")
+            cell.alignment = Alignment(horizontal=_alin[ci - 1], vertical="center")
             cell.border = border
+            # cor por faixa, das mesmas regras que geram o cellStyle da tela
+            _col = df.columns[ci - 1]
+            if _col in faixas_cor:
+                _par = cor_da_faixa(val, faixas_cor[_col])
+                if _par:
+                    cell.fill = PatternFill("solid", start_color=_par[0].lstrip("#"))
+                    cell.font = Font(name="Arial", size=10, bold=True,
+                                     color=_par[1].lstrip("#"))
+
+    ws.freeze_panes = "B2"
+    if ws.max_row > 1:
+        ws.auto_filter.ref = f"A1:{openpyxl.utils.get_column_letter(ws.max_column)}{ws.max_row}"
 
     wb.save(buf)
     buf.seek(0)
@@ -889,6 +976,30 @@ def ag_table_perdas(df, height=400):
     )
 
 
+def colunas_perdas(df, mostrar_kg=True):
+    """Ordem das colunas do resumo e a que família cada uma pertence.
+
+    Fonte ÚNICA da tabela HTML e do export. Antes o Excel recebia `df_perdas` na ordem crua,
+    então Ardidos saía depois de Perda Total, e não junto da produtividade como na tela.
+
+    Devolve (cols_show, familia), com familia[coluna] em {"base","perdas","qualidade","fenomenos"}.
+    """
+    campos_perdas = [rot for rot, _c in VARS_PERDAS if rot in df.columns]
+    campos_qual = [rot for rot, _c in VARS_QUALIDADE if rot in df.columns]
+    campos_fen = [rot for rot, _c in VARS_FENOMENOS if rot in df.columns]
+
+    campos_base = [c for c in ["Híbrido", "Status", "Locais"] if c in df.columns]
+    if mostrar_kg and "kg/ha" in df.columns:
+        campos_base.append("kg/ha")
+    if "sc/ha" in df.columns:
+        campos_base.append("sc/ha")
+    # Ardidos (qualidade) vem logo depois de sc/ha, junto da produtividade
+    cols_show = campos_base + campos_qual + campos_perdas + campos_fen
+    familia = ({c: "base" for c in campos_base} | {c: "qualidade" for c in campos_qual}
+               | {c: "perdas" for c in campos_perdas} | {c: "fenomenos" for c in campos_fen})
+    return cols_show, familia
+
+
 def tabela_perdas_html(df, mostrar_kg=True):
     """Tabela HTML colorida por status do material, no mesmo padrão visual da Apresentação da
     Conjunta (linha inteira na cor do material). Preserva a distinção perda × fenômeno com o
@@ -896,19 +1007,10 @@ def tabela_perdas_html(df, mostrar_kg=True):
     vertical grossa separando os dois blocos."""
     import streamlit.components.v1 as components
 
-    campos_perdas = [rot for rot, _c in VARS_PERDAS if rot in df.columns]
-    campos_qual = [rot for rot, _c in VARS_QUALIDADE if rot in df.columns]
-    campos_fen = [rot for rot, _c in VARS_FENOMENOS if rot in df.columns]
-
-    # colunas base: Híbrido, Status, Locais, [kg/ha], sc/ha, [Ardidos logo após sc/ha]
-    campos_base = [c for c in ["Híbrido", "Status", "Locais"] if c in df.columns]
-    if mostrar_kg and "kg/ha" in df.columns:
-        campos_base.append("kg/ha")
-    if "sc/ha" in df.columns:
-        campos_base.append("sc/ha")
-    # Ardidos (qualidade) vem logo depois de sc/ha, junto da produtividade
-    campos_base += campos_qual
-    cols_show = campos_base + campos_perdas + campos_fen
+    cols_show, familia = colunas_perdas(df, mostrar_kg=mostrar_kg)
+    campos_perdas = [c for c in cols_show if familia[c] == "perdas"]
+    campos_qual = [c for c in cols_show if familia[c] == "qualidade"]
+    campos_fen = [c for c in cols_show if familia[c] == "fenomenos"]
 
     COR_INT = {"Locais"}  # inteiros sem casa decimal
     primeiro_qual = campos_qual[0] if campos_qual else None   # borda antes de Ardidos
@@ -928,17 +1030,17 @@ def tabela_perdas_html(df, mostrar_kg=True):
 <style>
 .tb-perdas { width:100%; border-collapse:collapse; font-size:14px; font-family:'Helvetica Neue',sans-serif; }
 .tb-perdas th { color:#FFF !important; padding:8px 10px; text-align:center; border:1px solid #ccc;
-    white-space:nowrap; font-weight:700; font-size:13px; background:#4A4A4A; }
-.tb-perdas th.grp-perdas { background:#1F5673 !important; }
-.tb-perdas th.grp-qualidade { background:#5B4A2E !important; }
-.tb-perdas th.grp-fenomenos { background:#7A3B4E !important; }
+    white-space:nowrap; font-weight:700; font-size:13px; background:""" + COR_CAB_BASE + """; }
+.tb-perdas th.grp-perdas { background:""" + COR_GRUPO["perdas"] + """ !important; }
+.tb-perdas th.grp-qualidade { background:""" + COR_GRUPO["qualidade"] + """ !important; }
+.tb-perdas th.grp-fenomenos { background:""" + COR_GRUPO["fenomenos"] + """ !important; }
 .tb-perdas th:first-child { text-align:left; }
 .tb-perdas td { padding:7px 10px; border:1px solid #ddd; text-align:center; white-space:nowrap; font-size:14px; }
 .tb-perdas td:first-child { text-align:left; font-weight:600; }
 .tb-perdas td[data-fg="white"], .tb-perdas td[data-fg="white"] * { color:#FFF !important; }
 .tb-perdas td[data-fg="dark"], .tb-perdas td[data-fg="dark"] * { color:#1A1A1A !important; }
-.tb-perdas .sep-qual { border-left:3px solid #5B4A2E !important; }
-.tb-perdas .sep-fen { border-left:3px solid #7A3B4E !important; }
+.tb-perdas .sep-qual { border-left:3px solid """ + COR_GRUPO["qualidade"] + """ !important; }
+.tb-perdas .sep-fen { border-left:3px solid """ + COR_GRUPO["fenomenos"] + """ !important; }
 </style>
 <table class="tb-perdas"><thead><tr>"""
     for c in cols_show:
@@ -977,9 +1079,84 @@ def tabela_perdas_html(df, mostrar_kg=True):
     components.html(html, height=min(altura, 720), scrolling=True)
 
 
+def exportar_perdas_excel(df, mostrar_kg=True, nome_arquivo="resumo_perdas_fenomenos.xlsx",
+                          label="⬇️ Exportar Perdas e Fenômenos", key=None):
+    """Export do resumo com o MESMO visual da tabela da tela (`tabela_perdas_html`).
+
+    O export genérico não serve aqui por três motivos: a ordem das colunas é a da tela (Ardidos
+    junto da produtividade, não no fim), a linha inteira é pintada pelo STATUS do material (não
+    por faixa de valor), e o cabeçalho é dividido em três famílias com cor própria, separadas
+    por uma borda grossa — é ela que dá a leitura de blocos, e some num export comum.
+    """
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    cols_show, familia = colunas_perdas(df, mostrar_kg=mostrar_kg)
+    d = df.reindex(columns=cols_show).reset_index(drop=True)
+
+    # primeira coluna de cada família: recebe a borda grossa na cor da família
+    _sep = {}
+    for fam in ("qualidade", "perdas", "fenomenos"):
+        _c = next((c for c in cols_show if familia[c] == fam), None)
+        if _c:
+            _sep[_c] = COR_GRUPO[fam].lstrip("#")
+
+    buf = io.BytesIO()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    fina = Side(style="thin", color="CCCCCC")
+
+    def _borda(col):
+        grossa = _sep.get(col)
+        return Border(left=Side(style="medium", color=grossa) if grossa else fina,
+                      right=fina, top=fina, bottom=fina)
+
+    for ci, col in enumerate(cols_show, 1):
+        cell = ws.cell(row=1, column=ci, value=str(col))
+        _fam = familia.get(col, "base")
+        cell.fill = PatternFill("solid", start_color=(COR_GRUPO[_fam].lstrip("#")
+                                                      if _fam in COR_GRUPO
+                                                      else COR_CAB_BASE.lstrip("#")))
+        cell.font = Font(bold=True, name="Arial", size=10, color="FFFFFF")
+        cell.alignment = Alignment(horizontal="left" if ci == 1 else "center",
+                                   vertical="center", wrap_text=True)
+        cell.border = _borda(col)
+        _maior = max([len(str(col))] + [len(str(v)) for v in d[col].head(200) if v is not None])
+        ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = min(28, max(11, _maior + 3))
+    ws.row_dimensions[1].height = 32
+
+    for ri, (_, row) in enumerate(d.iterrows(), start=2):
+        status = str(row.get("Status", "") or "")
+        _bg = COR_STATUS_PLOT.get(status, "#FFFFFF").lstrip("#")
+        _fg = COR_TEXTO_STATUS.get(status, "#000000").lstrip("#")
+        for ci, col in enumerate(cols_show, 1):
+            val = row.get(col)
+            try:
+                if val is None or pd.isna(val):
+                    val = "—"          # mesmo travessão da tela para não avaliado
+            except (TypeError, ValueError):
+                pass
+            if col == "Locais" and isinstance(val, (int, float)) and not isinstance(val, bool):
+                val = int(round(float(val), 0))
+            cell = ws.cell(row=ri, column=ci, value=val)
+            cell.fill = PatternFill("solid", start_color=_bg)
+            cell.font = Font(name="Arial", size=10, color=_fg, bold=(ci == 1))
+            cell.alignment = Alignment(horizontal="left" if ci == 1 else "center",
+                                       vertical="center")
+            cell.border = _borda(col)
+
+    ws.freeze_panes = "B2"
+    wb.save(buf)
+    buf.seek(0)
+    st.download_button(label=label, data=buf, file_name=nome_arquivo,
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       key=key)
+
+
 tabela_perdas_html(df_perdas, mostrar_kg=mostrar_kg_perdas)
-exportar_excel(df_perdas, nome_arquivo="resumo_perdas_fenomenos.xlsx",
-               label="⬇️ Exportar Perdas e Fenômenos", key="exp_perdas_sn")
+exportar_perdas_excel(df_perdas, mostrar_kg=mostrar_kg_perdas,
+                      key="exp_perdas_sn")
 
 _cap_pf = ("**Perdas**: média de todos os plots avaliados (o zero entra) — taxa média na rede. "
            "**Fenômenos**: média só onde ocorreu (o zero fica de fora, para não achatar); neles, "
@@ -1330,14 +1507,17 @@ else:
                 gb_d.configure_grid_options(headerHeight=36, rowHeight=32, domLayout="normal")
                 gb_d.configure_column("Híbrido", pinned="left", width=170)
                 gb_d.configure_column("Status", width=90)
+                _faixas_delta = {"▼ Perde menos": FAIXA_PERDE_MENOS,
+                                 "▲ Perde mais": FAIXA_PERDE_MAIS,
+                                 "Delta médio": FAIXA_DELTA_PERDA}
                 gb_d.configure_column("▼ Perde menos", width=120,
-                    cellStyle=JsCode("function(p){if(p.value>0)return{background:'#D5F5D5',color:'#1A1A1A',fontWeight:'700'};return{};}"))
+                                      cellStyle=js_faixa(FAIXA_PERDE_MENOS))
                 gb_d.configure_column("▲ Perde mais", width=120,
-                    cellStyle=JsCode("function(p){if(p.value>0)return{background:'#FDDCDE',color:'#1A1A1A',fontWeight:'700'};return{};}"))
+                                      cellStyle=js_faixa(FAIXA_PERDE_MAIS))
                 gb_d.configure_column("= Igual", width=90)
                 # delta médio: NEGATIVO é bom (verde), positivo é ruim (vermelho) — inverso da nota
                 gb_d.configure_column("Delta médio", width=120,
-                    cellStyle=JsCode("function(p){var v=p.value; if(v<0)return{background:'#1E7A34',color:'#FFFFFF',fontWeight:'700'}; if(v>0)return{background:'#E63946',color:'#FFFFFF',fontWeight:'700'}; return{background:'#FFD600',color:'#1A1A1A'};}"))
+                                      cellStyle=js_faixa(FAIXA_DELTA_PERDA))
 
                 go_d = gb_d.build()
                 go_d["defaultColDef"]["headerClass"] = "ag-header-black"
@@ -1357,6 +1537,7 @@ else:
                 st.caption(f"**▼ Perde menos** = nº de locais em que o híbrido perdeu menos que "
                            f"{ref_delta}. **Delta médio negativo é bom** (perde menos na média).")
                 exportar_excel(df_res, nome_arquivo="delta_perdas.xlsx",
+                               faixas_cor=_faixas_delta,
                                label="⬇️ Exportar Delta vs Referência", key="exp_delta_perdas")
 
 st.divider()
@@ -1604,12 +1785,13 @@ else:
         gb_c.configure_column("Híbrido", pinned="left", width=170)
         gb_c.configure_column("Status", width=90)
         gb_c.configure_column("Locais Aval.", width=100)
-        gb_c.configure_column(_col_colapso, width=130,
-            cellStyle=JsCode("function(p){if(p.value>0)return{background:'#E63946',color:'#FFFFFF',fontWeight:'700'};return{background:'#D5F5D5',color:'#1A1A1A'};}"))
-        gb_c.configure_column(_col_ok, width=120,
-            cellStyle=JsCode("function(p){if(p.value>0)return{background:'#70C96E',color:'#1A1A1A'};return{};}"))
-        gb_c.configure_column("% Colapso", width=110,
-            cellStyle=JsCode("function(p){var v=p.value; if(v>=50)return{background:'#8B0000',color:'#FFFFFF',fontWeight:'700'}; if(v>=20)return{background:'#E63946',color:'#FFFFFF',fontWeight:'700'}; if(v>0)return{background:'#FFD600',color:'#1A1A1A'}; return{background:'#D5F5D5',color:'#1A1A1A'};}"))
+        # nomes destas duas colunas dependem do limite escolhido, então o dicionário é montado
+        # aqui — as REGRAS continuam sendo as constantes do topo, compartilhadas com o export
+        _faixas_colapso = {_col_colapso: FAIXA_COLAPSO_N, _col_ok: FAIXA_OK_N,
+                           "% Colapso": FAIXA_PCT_COLAPSO}
+        gb_c.configure_column(_col_colapso, width=130, cellStyle=js_faixa(FAIXA_COLAPSO_N))
+        gb_c.configure_column(_col_ok, width=120, cellStyle=js_faixa(FAIXA_OK_N))
+        gb_c.configure_column("% Colapso", width=110, cellStyle=js_faixa(FAIXA_PCT_COLAPSO))
         gb_c.configure_column("Locais em Colapso", width=300)
 
         go_c = gb_c.build()
@@ -1630,6 +1812,7 @@ else:
         st.caption(f"**Colapso** = local com {perda_surv} acima de {limite_colapso:.0f}%. "
                    f"Ordenado do menor para o maior % de colapso (melhores primeiro).")
         exportar_excel(df_colapso, nome_arquivo="colapso_perdas.xlsx",
+                       faixas_cor=_faixas_colapso,
                        label="⬇️ Exportar Mapa de Colapso", key="exp_colapso_perdas")
 
 st.divider()
@@ -1984,13 +2167,13 @@ else:
         gb_pc.configure_column("Status", width=90)
         gb_pc.configure_column("Locais", width=80)
         gb_pc.configure_column("Média (rede)", width=110)
-        gb_pc.configure_column("Máximo", width=100,
-            cellStyle=JsCode("function(p){var v=p.value; if(v>=25)return{background:'#C8201E',color:'#FFF',fontWeight:'700'}; if(v>=15)return{background:'#E8850D',color:'#1A1A1A',fontWeight:'700'}; if(v>=8)return{background:'#F6D202',color:'#1A1A1A'}; return{background:'#D5F5D5',color:'#1A1A1A'};}"))
+        _col_crit = f"Locais críticos (> {_lim_pc:.0f}%)"
+        _faixas_pior = {"Máximo": FAIXA_MAX_PERDA, "Δ (máx − média)": FAIXA_DELTA_MAX,
+                        _col_crit: FAIXA_CRITICOS}
+        gb_pc.configure_column("Máximo", width=100, cellStyle=js_faixa(FAIXA_MAX_PERDA))
         gb_pc.configure_column("Local do máx", width=200)
-        gb_pc.configure_column("Δ (máx − média)", width=130,
-            cellStyle=JsCode("function(p){var v=p.value; if(v>=20)return{background:'#C8201E',color:'#FFF',fontWeight:'700'}; if(v>=10)return{background:'#E8850D',color:'#1A1A1A'}; return{};}"))
-        gb_pc.configure_column(f"Locais críticos (> {_lim_pc:.0f}%)", width=160,
-            cellStyle=JsCode("function(p){if(p.value>0)return{background:'#FDDCDE',color:'#1A1A1A',fontWeight:'700'};return{background:'#D5F5D5',color:'#1A1A1A'};}"))
+        gb_pc.configure_column("Δ (máx − média)", width=130, cellStyle=js_faixa(FAIXA_DELTA_MAX))
+        gb_pc.configure_column(_col_crit, width=160, cellStyle=js_faixa(FAIXA_CRITICOS))
 
         go_pc = gb_pc.build()
         go_pc["defaultColDef"]["headerClass"] = "ag-header-black"
@@ -2011,6 +2194,7 @@ else:
                    f"**Δ** grande = híbrido irregular (média baixa mas com um pico forte). "
                    f"Ordenado pelo maior máximo. {len(df_pior)} híbridos.")
         exportar_excel(df_pior, nome_arquivo="piores_casos_perda.xlsx",
+                       faixas_cor=_faixas_pior,
                        label="⬇️ Exportar Piores Casos", key="exp_pc_perdas")
 
 
