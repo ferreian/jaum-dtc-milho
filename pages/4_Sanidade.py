@@ -65,6 +65,101 @@ def _eh_col_classe(nome) -> bool:
     'Classe Ferrugem' (tabelas exibidas) e 'FER_classe' (base da apresentação)."""
     n = str(nome).strip().lower()
     return n == "classe" or n.startswith("classe ") or n.endswith("_classe")
+
+
+# ── Cor por FAIXA de valor (colunas sem sigla, mas coloridas na tela) ──────────
+# Escritas uma vez como dado: o cellStyle do AgGrid é GERADO daqui e o Excel lê a mesma tabela.
+# Cada regra é (operador, limite, cor), avaliada em ordem; a primeira que casa vence.
+#   operador: ">=", ">", "<=", "<", "==", "contem" (substring, para colunas de texto),
+#             ou None para "vale sempre" (regra final, sem limite)
+#   cor:      sigla de classe (usa COR_CLASS/COR_TEXTO_CLASS) ou par literal (fundo, texto)
+# Sem regra final, valor que não casa fica SEM cor — é o caso das contagens do delta, em que
+# zero não é bom nem ruim e pintar seria dar significado a ausência de ocorrência.
+FAIXAS_COR = {
+    "Top 25% do local (%)": [(">=", 75, "R"), (">=", 50, "T"), (">=", 25, "MT"),
+                             (None, None, "S")],
+    "Nota":                 [(">=", 7, "T"), (">=", 5, "MT"), (None, None, "S")],
+    # delta vs referência: contagens em tom pastel (leitura de apoio) e o delta médio em
+    # cor cheia (é o número que ordena a tabela)
+    "▲ Acima ref":          [(">", 0, ("#D5F5D5", "#1A1A1A"))],
+    "▼ Abaixo ref":         [(">", 0, ("#FDDCDE", "#1A1A1A"))],
+    "Delta médio":          [(">", 0, "R"), ("<", 0, "S"), (None, None, "MT")],
+    # evolução por safra: consistência em cor cheia; tendência por TEXTO ("↑ melhora" /
+    # "↓ piora"), em pastel — "→ estável" e "—" ficam sem cor de propósito
+    "Consistência %":       [(">=", 75, "R"), (">=", 50, "T"), (">=", 25, "MT"),
+                             (None, None, "S")],
+    "Tendência":            [("contem", "melhora", ("#D5F5D5", "#1A1A1A")),
+                             ("contem", "piora", ("#FDDCDE", "#1A1A1A"))],
+    # mapa de colapso: as contagens usam o verde pastel como "nada a relatar" e a cor cheia
+    # quando há ocorrência; os dois percentuais têm a mesma escala de 20/50/80
+    "S / AS (≤4)":          [(">", 0, "S"), (None, None, ("#D5F5D5", "#1A1A1A"))],
+    "MT (5–6)":             [(">", 0, "MT")],
+    "T / R (≥7)":           [(">", 0, "T")],
+    "% Colapso":            [(">=", 80, "AS"), (">=", 50, "S"), (">=", 20, "MT"),
+                             (None, None, ("#D5F5D5", "#1A1A1A"))],
+    "% Incidência":         [(">=", 80, "AS"), (">=", 50, "S"), (">=", 20, "MT"),
+                             (None, None, ("#D5F5D5", "#1A1A1A"))],
+}
+
+_OPS_FAIXA = {">=": lambda v, l: v >= l, ">": lambda v, l: v > l,
+              "<=": lambda v, l: v <= l, "<": lambda v, l: v < l,
+              "==": lambda v, l: v == l}
+
+
+def _par_cor(cor):
+    """Resolve a cor da regra em (fundo, texto), com '#'. Aceita sigla de classe ou par literal."""
+    if isinstance(cor, (tuple, list)):
+        return cor[0], cor[1]
+    return COR_CLASS[cor], COR_TEXTO_CLASS.get(cor, "#1A1A1A")
+
+
+def cor_da_faixa(valor, faixas):
+    """(fundo, texto) para o valor, ou None se nenhuma regra casar.
+    Regras numéricas exigem valor numérico; a regra `contem` trabalha sobre o texto."""
+    if valor is None:
+        return None
+    try:
+        v = float(valor)
+        if v != v:                  # NaN
+            return None
+    except (TypeError, ValueError):
+        v = None
+    _txt = str(valor)
+    for op, limite, cor in faixas:
+        if op is None:
+            return _par_cor(cor)
+        if op == "contem":
+            if str(limite) in _txt:
+                return _par_cor(cor)
+            continue
+        if v is not None and _OPS_FAIXA[op](v, limite):
+            return _par_cor(cor)
+    return None
+
+
+def js_faixa(faixas):
+    """cellStyle do AgGrid gerado a partir de `faixas` — NOVA instância a cada chamada,
+    porque reusar o mesmo objeto JsCode em duas colunas perde o estilo."""
+    _linhas = []
+    for op, limite, cor in faixas:
+        _bg, _fg = _par_cor(cor)
+        _ret = f"return {{ background: '{_bg}', color: '{_fg}', fontWeight: '700' }};"
+        if op is None:
+            _cond = None
+        elif op == "contem":
+            _cond = f"String(v).indexOf('{limite}') >= 0"
+        else:
+            _cond = f"v {op} {limite}"
+        _linhas.append(f"                {_ret}" if _cond is None
+                       else f"                if ({_cond}) {_ret}")
+    return JsCode("            function(p) {\n"
+                  "                var v = p.value;\n"
+                  "                if (v === null || v === undefined || v === '') return {};\n"
+                  + "\n".join(_linhas) + "\n"
+                  "                return {};\n"
+                  "            }\n")
+
+
 LABEL_CLASS = {
     "AS": "AS — Altamente suscetível (nota 1–2)",
     "S":  "S — Suscetível (3–4)",
@@ -212,7 +307,10 @@ def ag_table(df, height=400, estilos_col=None, renderers_col=None):
 
 
 # ── Helper exportar Excel (mesmo padrão da soja) ──────────────────────────────
-def exportar_excel(df, nome_arquivo="tabela.xlsx", label="⬇️ Exportar Excel", key=None):
+def exportar_excel(df, nome_arquivo="tabela.xlsx", label="⬇️ Exportar Excel", key=None,
+                   faixas_cor=None):
+    """Export com as cores da tela. `faixas_cor`: {coluna: faixas} para colunas numéricas
+    coloridas por limite (ver FAIXAS_COR); as colunas de classe são detectadas pelo nome."""
     import io
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -222,17 +320,40 @@ def exportar_excel(df, nome_arquivo="tabela.xlsx", label="⬇️ Exportar Excel"
     ws = wb.active
     df = df.reset_index(drop=True)
 
+    # O AgGrid ACRESCENTA `::auto_unique_id::` ao DataFrame que recebe, no próprio objeto. Como
+    # o export vem depois da tabela na página, a coluna interna vazava para o Excel. Descarta
+    # aqui, no único lugar por onde todos os exports passam, em vez de em cada chamada.
+    df = df.drop(columns=[c for c in df.columns if str(c).startswith("::")], errors="ignore")
+
+    faixas_cor = faixas_cor or {}
+
+    # ALINHAMENTO como no AgGrid: texto à esquerda, número à direita — e o cabeçalho segue a
+    # coluna, senão o rótulo "Consistência %" fica solto sobre números encostados na borda.
+    _num = [bool(pd.api.types.is_numeric_dtype(df[c])) for c in df.columns]
+    _alin = ["right" if n else "left" for n in _num]
+
     thin = Side(style="thin", color="CCCCCC")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
     for ci, col in enumerate(df.columns, 1):
         cell = ws.cell(row=1, column=ci, value=str(col))
-        cell.font = Font(bold=True, name="Arial", size=10, color="1A1A1A")
-        cell.fill = PatternFill("solid", start_color="F2F2F2")
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        # "= Empate" começa com "=" e o openpyxl o gravava como FÓRMULA (data_type 'f'): no Excel
+        # virava fórmula inválida e, ao reabrir, o cabeçalho aparecia vazio ("Unnamed"). Forçar
+        # texto resolve para "=", "+", "-" e "@", que são os inícios que o Excel interpreta.
+        if str(col).lstrip()[:1] in ("=", "+", "-", "@"):
+            cell.data_type = "s"
+        # cabeçalho escuro com texto branco: é o #4A4A4A do custom_css de TODAS as tabelas do
+        # painel (.ag-header), então o arquivo abre com a mesma cara da tela
+        cell.font = Font(bold=True, name="Arial", size=10, color="FFFFFF")
+        cell.fill = PatternFill("solid", start_color="4A4A4A")
+        cell.alignment = Alignment(horizontal=_alin[ci - 1], vertical="center", wrap_text=True)
         cell.border = border
-        ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = max(12, len(str(col)) + 2)
-    ws.row_dimensions[1].height = 28
+        # largura pelo conteúdo real (cabeçalho e valores), com piso e teto para não desmontar
+        # o layout com um nome de híbrido longo
+        _maior = max([len(str(col))] +
+                     [len(str(v)) for v in df[col].head(200).tolist() if v is not None])
+        ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = min(40, max(11, _maior + 3))
+    ws.row_dimensions[1].height = 30
 
     # quais colunas carregam sigla de classe — resolvido uma vez, fora do laço de células
     _col_classe = [_eh_col_classe(c) for c in df.columns]
@@ -249,8 +370,10 @@ def exportar_excel(df, nome_arquivo="tabela.xlsx", label="⬇️ Exportar Excel"
             except (TypeError, ValueError):
                 pass
             cell = ws.cell(row=ri, column=ci, value=val)
+            if isinstance(val, str) and val.lstrip()[:1] in ("=", "+", "-", "@"):
+                cell.data_type = "s"          # mesma blindagem de fórmula do cabeçalho
             cell.font = Font(name="Arial", size=10)
-            cell.alignment = Alignment(horizontal="left" if ci == 1 else "center", vertical="center")
+            cell.alignment = Alignment(horizontal=_alin[ci - 1], vertical="center")
             cell.border = border
             # classe com a MESMA cor da tela: fundo = categoria (AS vermelho-escuro → R verde),
             # negrito e cor de texto do dicionário, como no cellStyle do AgGrid. Só pinta quando
@@ -260,6 +383,20 @@ def exportar_excel(df, nome_arquivo="tabela.xlsx", label="⬇️ Exportar Excel"
                 cell.fill = PatternFill("solid", start_color=COR_CLASS_XL[_cls])
                 cell.font = Font(name="Arial", size=10, bold=True,
                                  color=COR_TEXTO_CLASS_XL.get(_cls, "1A1A1A"))
+            # colunas coloridas por faixa de valor (Top 25%, Nota, Delta médio, contagens): as
+            # regras vêm da MESMA tabela que gera o cellStyle do AgGrid, então não podem divergir
+            elif df.columns[ci - 1] in faixas_cor:
+                _par = cor_da_faixa(val, faixas_cor[df.columns[ci - 1]])
+                if _par:
+                    cell.fill = PatternFill("solid", start_color=_par[0].lstrip("#"))
+                    cell.font = Font(name="Arial", size=10, bold=True,
+                                     color=_par[1].lstrip("#"))
+
+    # o painel fixa o híbrido à esquerda (pinned) e o cabeçalho no topo; e o filtro do AgGrid
+    # vira o autofiltro do Excel, para a tabela ser navegável do mesmo jeito
+    ws.freeze_panes = "B2"
+    if ws.max_row > 1:
+        ws.auto_filter.ref = f"A1:{openpyxl.utils.get_column_letter(ws.max_column)}{ws.max_row}"
 
     wb.save(buf)
     buf.seek(0)
@@ -1261,20 +1398,9 @@ else:
         gb_rk.configure_column("Status", width=90)
         gb_rk.configure_column("Locais", width=80)
         gb_rk.configure_column("Top 25% do local (%)", width=160,
-            cellStyle=JsCode("""function(p){
-                var v = p.value;
-                if(v >= 75) return {background:'#1E7A34', color:'#FFFFFF', fontWeight:'700'};
-                if(v >= 50) return {background:'#70C96E', color:'#1A1A1A', fontWeight:'700'};
-                if(v >= 25) return {background:'#FFD600', color:'#1A1A1A'};
-                return {background:'#E63946', color:'#FFFFFF', fontWeight:'700'};
-            }"""))
+                               cellStyle=js_faixa(FAIXAS_COR["Top 25% do local (%)"]))
         gb_rk.configure_column("Nota", width=90,
-            cellStyle=JsCode("""function(p){
-                var v = p.value;
-                if(v >= 7) return {background:'#70C96E', color:'#1A1A1A'};
-                if(v >= 5) return {background:'#FFD600', color:'#1A1A1A'};
-                return {background:'#E63946', color:'#FFFFFF'};
-            }"""))
+                               cellStyle=js_faixa(FAIXAS_COR["Nota"]))
         gb_rk.configure_column("sc/ha médio", width=110)
 
         go_rk = gb_rk.build()
@@ -1308,7 +1434,8 @@ else:
         st.caption(_cap_rk)
 
         exportar_excel(df_ranking, nome_arquivo="ranking_quartil_sanitario.xlsx",
-                       label="⬇️ Exportar Ranking por Quartil", key="exp_rank_sn")
+                       label="⬇️ Exportar Ranking por Quartil", key="exp_rank_sn",
+                       faixas_cor=FAIXAS_COR)
 
 st.divider()
 
@@ -1745,20 +1872,12 @@ else:
                 gb_dt.configure_column("Status", width=90)
                 gb_dt.configure_column("Locais", width=80)
                 gb_dt.configure_column("▲ Acima ref", width=110,
-                    cellStyle=JsCode("""function(p){
-                        if(p.value>0) return {background:'#D5F5D5',color:'#1A1A1A',fontWeight:'700'};
-                        return {};}"""))
+                                       cellStyle=js_faixa(FAIXAS_COR["▲ Acima ref"]))
                 gb_dt.configure_column("▼ Abaixo ref", width=110,
-                    cellStyle=JsCode("""function(p){
-                        if(p.value>0) return {background:'#FDDCDE',color:'#1A1A1A',fontWeight:'700'};
-                        return {};}"""))
+                                       cellStyle=js_faixa(FAIXAS_COR["▼ Abaixo ref"]))
                 gb_dt.configure_column("= Empate", width=90)
                 gb_dt.configure_column("Delta médio", width=110,
-                    cellStyle=JsCode("""function(p){
-                        var v=p.value;
-                        if(v>0)  return {background:'#1E7A34',color:'#FFFFFF',fontWeight:'700'};
-                        if(v<0)  return {background:'#E63946',color:'#FFFFFF',fontWeight:'700'};
-                        return {background:'#FFD600',color:'#1A1A1A'};}"""))
+                                       cellStyle=js_faixa(FAIXAS_COR["Delta médio"]))
 
                 go_dt = gb_dt.build()
                 go_dt["defaultColDef"]["headerClass"] = "ag-header-black"
@@ -1781,7 +1900,8 @@ else:
                     f"**▲ Acima ref** = nº de locais em que o híbrido superou {ref_delta} em sanidade. "
                     f"**Delta médio** = média dos deltas em todos os locais avaliados juntos.")
                 exportar_excel(df_resumo_delta, nome_arquivo="delta_referencia.xlsx",
-                               label="⬇️ Exportar Delta vs Referência", key="exp_delta_sn")
+                               label="⬇️ Exportar Delta vs Referência", key="exp_delta_sn",
+                               faixas_cor=FAIXAS_COR)
 
 st.divider()
 
@@ -1975,17 +2095,9 @@ else:
                 gb_ev.configure_column("Híbrido", pinned="left", width=170)
                 gb_ev.configure_column("Status", width=90)
                 gb_ev.configure_column("Consistência %", width=130,
-                    cellStyle=JsCode("""function(p){
-                        var v=p.value;
-                        if(v>=75) return {background:'#1E7A34',color:'#FFFFFF',fontWeight:'700'};
-                        if(v>=50) return {background:'#70C96E',color:'#1A1A1A'};
-                        if(v>=25) return {background:'#FFD600',color:'#1A1A1A'};
-                        return {background:'#E63946',color:'#FFFFFF'};}"""))
+                                       cellStyle=js_faixa(FAIXAS_COR["Consistência %"]))
                 gb_ev.configure_column("Tendência", width=120,
-                    cellStyle=JsCode("""function(p){
-                        if(p.value && p.value.indexOf('melhora')>=0) return {background:'#D5F5D5',color:'#1A1A1A',fontWeight:'700'};
-                        if(p.value && p.value.indexOf('piora')>=0) return {background:'#FDDCDE',color:'#1A1A1A',fontWeight:'700'};
-                        return {};}"""))
+                                       cellStyle=js_faixa(FAIXAS_COR["Tendência"]))
                 for sf in safras_ev:
                     gb_ev.configure_column(str(sf), width=90)
 
@@ -2010,6 +2122,7 @@ else:
                     "**Consistência %** = em quantas safras o híbrido ficou na média do grupo ou acima. "
                     "**Tendência** = direção da nota entre safras (com 2 safras, é a diferença entre elas).")
                 exportar_excel(df_cons, nome_arquivo="evolucao_por_safra.xlsx",
+                               faixas_cor=FAIXAS_COR,
                                label="⬇️ Exportar Evolução por Safra", key="exp_ev_sn")
 
 st.divider()
@@ -2602,15 +2715,15 @@ else:
             gb_col.configure_column("Status", width=90)
             gb_col.configure_column("Locais Aval.", width=100)
             gb_col.configure_column("S / AS (≤4)", width=100,
-                cellStyle=JsCode("""function(p){if(p.value>0) return {background:'#E63946',color:'#FFFFFF',fontWeight:'700'}; return {background:'#D5F5D5',color:'#1A1A1A'};}"""))
+                                    cellStyle=js_faixa(FAIXAS_COR["S / AS (≤4)"]))
             gb_col.configure_column("MT (5–6)", width=90,
-                cellStyle=JsCode("""function(p){if(p.value>0) return {background:'#FFD600',color:'#1A1A1A'}; return {};}"""))
+                                    cellStyle=js_faixa(FAIXAS_COR["MT (5–6)"]))
             gb_col.configure_column("T / R (≥7)", width=90,
-                cellStyle=JsCode("""function(p){if(p.value>0) return {background:'#70C96E',color:'#1A1A1A'}; return {};}"""))
+                                    cellStyle=js_faixa(FAIXAS_COR["T / R (≥7)"]))
             gb_col.configure_column("% Colapso", width=100,
-                cellStyle=JsCode("""function(p){var v=p.value; if(v>=80) return {background:'#8B0000',color:'#FFFFFF',fontWeight:'700'}; if(v>=50) return {background:'#E63946',color:'#FFFFFF',fontWeight:'700'}; if(v>=20) return {background:'#FFD600',color:'#1A1A1A'}; return {background:'#D5F5D5',color:'#1A1A1A'};}"""))
+                                    cellStyle=js_faixa(FAIXAS_COR["% Colapso"]))
             gb_col.configure_column("% Incidência", width=105,
-                cellStyle=JsCode("""function(p){var v=p.value; if(v>=80) return {background:'#8B0000',color:'#FFFFFF',fontWeight:'700'}; if(v>=50) return {background:'#E63946',color:'#FFFFFF',fontWeight:'700'}; if(v>=20) return {background:'#FFD600',color:'#1A1A1A'}; return {background:'#D5F5D5',color:'#1A1A1A'};}"""))
+                                    cellStyle=js_faixa(FAIXAS_COR["% Incidência"]))
             gb_col.configure_column("Locais em Colapso", width=280)
             gb_col.configure_column("Locais c/ Incidência", width=280)
 
@@ -2637,6 +2750,7 @@ else:
                 "**MT (5–6)** = zona de atenção · **T / R (≥7)** = sanidade adequada. Ordenado pelo "
                 "maior nº de colapsos.")
             exportar_excel(df_colapso, nome_arquivo="mapa_colapso.xlsx",
+                           faixas_cor=FAIXAS_COR,
                            label="⬇️ Exportar Mapa de Colapso", key="exp_colapso_sn")
 
 st.divider()
