@@ -52,6 +52,19 @@ COR_CLASS = {
 }
 COR_TEXTO_CLASS = {"AS": "#FFFFFF", "S": "#FFFFFF", "MT": "#1A1A1A",
                    "T": "#1A1A1A", "R": "#FFFFFF"}
+
+# Mesma paleta no formato que o openpyxl aceita (RRGGBB, sem "#"). Derivadas dos dicionários
+# acima de propósito: a cor da classe no Excel tem que ser a MESMA da tela, e a única forma de
+# garantir isso é não redigitar o hex. Mudar COR_CLASS muda tela e export juntos.
+COR_CLASS_XL = {k: v.lstrip("#") for k, v in COR_CLASS.items()}
+COR_TEXTO_CLASS_XL = {k: v.lstrip("#") for k, v in COR_TEXTO_CLASS.items()}
+
+
+def _eh_col_classe(nome) -> bool:
+    """A coluna carrega sigla de classe? Cobre os dois padrões usados na página:
+    'Classe Ferrugem' (tabelas exibidas) e 'FER_classe' (base da apresentação)."""
+    n = str(nome).strip().lower()
+    return n == "classe" or n.startswith("classe ") or n.endswith("_classe")
 LABEL_CLASS = {
     "AS": "AS — Altamente suscetível (nota 1–2)",
     "S":  "S — Suscetível (3–4)",
@@ -221,6 +234,9 @@ def exportar_excel(df, nome_arquivo="tabela.xlsx", label="⬇️ Exportar Excel"
         ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = max(12, len(str(col)) + 2)
     ws.row_dimensions[1].height = 28
 
+    # quais colunas carregam sigla de classe — resolvido uma vez, fora do laço de células
+    _col_classe = [_eh_col_classe(c) for c in df.columns]
+
     for ri, row_data in enumerate(df.itertuples(index=False), start=2):
         for ci, val in enumerate(row_data, 1):
             try:
@@ -236,6 +252,14 @@ def exportar_excel(df, nome_arquivo="tabela.xlsx", label="⬇️ Exportar Excel"
             cell.font = Font(name="Arial", size=10)
             cell.alignment = Alignment(horizontal="left" if ci == 1 else "center", vertical="center")
             cell.border = border
+            # classe com a MESMA cor da tela: fundo = categoria (AS vermelho-escuro → R verde),
+            # negrito e cor de texto do dicionário, como no cellStyle do AgGrid. Só pinta quando
+            # o valor é uma das cinco siglas — assim "—" e vazio continuam sem fundo.
+            _cls = str(val).strip() if val is not None else ""
+            if _col_classe[ci - 1] and _cls in COR_CLASS_XL:
+                cell.fill = PatternFill("solid", start_color=COR_CLASS_XL[_cls])
+                cell.font = Font(name="Arial", size=10, bold=True,
+                                 color=COR_TEXTO_CLASS_XL.get(_cls, "1A1A1A"))
 
     wb.save(buf)
     buf.seek(0)
@@ -761,20 +785,26 @@ def ag_table_doencas(df, height=400):
     _centro = {"fontSize": "13px", "color": "#000000",
                "fontFamily": "Helvetica Neue, sans-serif", "textAlign": "center"}
 
+    # O cellStyle da classe é GERADO da paleta (COR_CLASS/COR_TEXTO_CLASS), não digitado à mão:
+    # os hexes ficavam repetidos aqui, no HTML e no Excel, e foi essa repetição que fez o export
+    # sair com cor diferente da tela. Agora as três leituras vêm do mesmo dicionário.
+    def _js_classe():
+        _regras = "\n".join(
+            f"                if (v === '{k}') return {{ background: '{COR_CLASS[k]}', "
+            f"color: '{COR_TEXTO_CLASS.get(k, '#1A1A1A')}', "
+            f"fontWeight: '700', textAlign: 'center' }};"
+            for k in ORDEM_CLASS)
+        # uma instância de JsCode POR COLUNA — reusar o mesmo objeto perde o estilo
+        return JsCode("            function(params) {\n"
+                      "                var v = params.value;\n"
+                      f"{_regras}\n"
+                      "                return { textAlign: 'center' };\n"
+                      "            }\n")
+
     for col in df.columns:
         if col.startswith("Classe "):
-            # uma instância de JsCode POR COLUNA — reusar o mesmo objeto perde o estilo
-            gb.configure_column(col, width=90, headerClass="ag-header-center", cellStyle=JsCode("""
-            function(params) {
-                var v = params.value;
-                if (v === 'AS') return { background: '#8B0000', color: '#FFFFFF', fontWeight: '700', textAlign: 'center' };
-                if (v === 'S')  return { background: '#E63946', color: '#FFFFFF', fontWeight: '700', textAlign: 'center' };
-                if (v === 'MT') return { background: '#FFD600', color: '#1A1A1A', fontWeight: '700', textAlign: 'center' };
-                if (v === 'T')  return { background: '#70C96E', color: '#1A1A1A', fontWeight: '700', textAlign: 'center' };
-                if (v === 'R')  return { background: '#1E7A34', color: '#FFFFFF', fontWeight: '700', textAlign: 'center' };
-                return { textAlign: 'center' };
-            }
-            """))
+            gb.configure_column(col, width=90, headerClass="ag-header-center",
+                                cellStyle=_js_classe())
         elif col.startswith("Nota "):
             gb.configure_column(col, width=80, cellStyle=_centro, headerClass="ag-header-center")
         elif col.startswith("Inc. "):
@@ -1084,6 +1114,15 @@ else:
                     c.alignment = Alignment(horizontal="left" if cj == 1 else "center",
                                             vertical="center")
                     c.border = borda
+                    # A célula de Classe é a EXCEÇÃO da linha: na tela ela é pintada pela classe
+                    # (T/R verde, MT amarelo, S/AS vermelho), não pelo status do material — e é
+                    # ela que o leitor procura. Cada doença ocupa três colunas (Nota, %, Classe),
+                    # então a de classe é a terceira de cada trio depois das colunas base.
+                    _cls = str(val).strip()
+                    if cj > len(base) and (cj - len(base)) % 3 == 0 and _cls in COR_CLASS_XL:
+                        c.fill = PatternFill("solid", start_color=COR_CLASS_XL[_cls])
+                        c.font = Font(name="Arial", size=10, bold=True,
+                                      color=COR_TEXTO_CLASS_XL.get(_cls, "1A1A1A"))
 
             ws.freeze_panes = "B3"
             buf = io.BytesIO()
