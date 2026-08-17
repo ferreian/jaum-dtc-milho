@@ -2900,7 +2900,16 @@ parcelas oscila muito: leia o número, mas não decida por ele.
                 _FOLGA_G = 1.22
                 _max_sc = float(_dfg["sc"].max()) if _dfg["sc"].notna().any() else 1
                 _max_v = float(_dfg["var"].max()) if _dfg["var"].notna().any() else 1
-                _rng_sc, _rng_v = _max_sc * _FOLGA_G, _max_v * _FOLGA_G
+                # FENÔMENO SEM OCORRÊNCIA: a régua "so_maior" devolve 0,0 quando todas as parcelas
+                # do grupo eram zero (avaliado e nunca ocorreu — ver acima). Se isso vale para
+                # TODOS os grupos, o máximo é zero, a amplitude do eixo direito é zero e a
+                # normalização do rótulo dividia por zero (ZeroDivisionError com "Green snap",
+                # que é o caso normal na maioria das redes). Aqui a linha simplesmente não é
+                # desenhada: uma reta no chão pareceria dado medido igual a zero, que é conclusão
+                # diferente de "não houve ocorrência".
+                _var_zerada = not (_max_v > 0)
+                _rng_sc = _max_sc * _FOLGA_G
+                _rng_v = (_max_v * _FOLGA_G) if not _var_zerada else 1.0
 
                 fig_g = go_plt.Figure()
 
@@ -2952,50 +2961,55 @@ parcelas oscila muito: leia o número, mas não decida por ele.
                     showlegend=True, hoverinfo="skip"))
 
                 # ── linha + pontos: a variável escolhida (eixo direito) ───────────
-                fig_g.add_trace(go_plt.Scatter(
-                    x=_dfg["grupo"], y=_dfg["var"], name=_rot_v, yaxis="y2",
-                    mode="lines+markers",
-                    line=dict(color=_CL_LINHA_G, width=2.5),
-                    marker=dict(color=_CL_LINHA_G, size=13,
-                                line=dict(color="#FFFFFF", width=2)),
-                    hovertemplate=("<b>%{x}</b><br>" + _rot_v +
-                                   ": %{y:." + str(_dec_v) + "f}<extra></extra>")))
+                if _var_zerada:
+                    # sem ocorrência na rede: só as barras. O eixo direito também sai (abaixo),
+                    # senão sobra uma escala pendurada sem série nenhuma para ler nela.
+                    pass
+                else:
+                    fig_g.add_trace(go_plt.Scatter(
+                        x=_dfg["grupo"], y=_dfg["var"], name=_rot_v, yaxis="y2",
+                        mode="lines+markers",
+                        line=dict(color=_CL_LINHA_G, width=2.5),
+                        marker=dict(color=_CL_LINHA_G, size=13,
+                                    line=dict(color="#FFFFFF", width=2)),
+                        hovertemplate=("<b>%{x}</b><br>" + _rot_v +
+                                       ": %{y:." + str(_dec_v) + "f}<extra></extra>")))
 
-                # rótulo da linha como ANOTAÇÃO, não como texto do traço: só a anotação aceita
-                # fundo próprio, e é ele que impede o número de se perder sobre a barra.
-                _lin_bv = _dfg[(_dfg["grupo"] == _g_base) & _dfg["var"].notna()]
-                _base_v = (float(_lin_bv["var"].iloc[0]) if not _lin_bv.empty
-                           else (_dfg["var"].dropna().iloc[0] if _dfg["var"].notna().any()
-                                 else np.nan))
-                for _gx, _vy, _sy in zip(_dfg["grupo"], _dfg["var"], _dfg["sc"]):
-                    if pd.isna(_vy):
-                        continue
-                    # com os dois eixos em zero, uma variação de 4% desenha uma linha reta. O
-                    # número resolve o que o desenho não mostra: a variação vai escrita no rótulo.
-                    _dv = ((_vy - _base_v) / abs(_base_v) * 100) if pd.notna(_base_v) and _base_v else np.nan
-                    _txt_v = f"<b>{_vy:.{_dec_v}f}</b>"
-                    if pd.notna(_dv) and _gx != _g_base:
-                        # aqui a seta mostra a DIREÇÃO sem julgar: o PMG cair quando a população
-                        # sobe é o mecanismo agronômico esperado, não um problema do material.
-                        _seta_v = "▲" if _dv > 0.5 else ("▼" if _dv < -0.5 else "=")
-                        _txt_v += (f"<br><span style='font-size:10px;color:#6B7280'>"
-                                   f"{_seta_v} {_dv:+.1f}% vs {_g_base}</span>")
-                    # o rótulo da barra vive no TERÇO DE BAIXO da barra, longe da faixa onde os
-                    # pontos da linha se concentram. Então o rótulo do ponto sobe por padrão; só
-                    # desce quando o ponto está tão no alto que o texto sairia do gráfico.
-                    _f_var = _vy / _rng_v
-                    if _f_var > 0.90:        # quase no teto: desce, senão o texto sai do gráfico
-                        _shift = -22
-                    elif _f_var < 0.22:      # bem no pé: sobe mais, para escapar do rótulo da barra
-                        _shift = 34
-                    else:
-                        _shift = 20
-                    fig_g.add_annotation(
-                        x=_gx, y=_vy, yref="y2", text=_txt_v,
-                        showarrow=False, yshift=_shift, xanchor="center",
-                        font=dict(size=13, color=_CL_LINHA_G),
-                        bgcolor="rgba(255,255,255,0.88)", bordercolor=_CL_LINHA_G,
-                        borderwidth=1, borderpad=3)
+                    # rótulo da linha como ANOTAÇÃO, não como texto do traço: só a anotação aceita
+                    # fundo próprio, e é ele que impede o número de se perder sobre a barra.
+                    _lin_bv = _dfg[(_dfg["grupo"] == _g_base) & _dfg["var"].notna()]
+                    _base_v = (float(_lin_bv["var"].iloc[0]) if not _lin_bv.empty
+                               else (_dfg["var"].dropna().iloc[0] if _dfg["var"].notna().any()
+                                     else np.nan))
+                    for _gx, _vy, _sy in zip(_dfg["grupo"], _dfg["var"], _dfg["sc"]):
+                        if pd.isna(_vy):
+                            continue
+                        # com os dois eixos em zero, uma variação de 4% desenha uma linha reta. O
+                        # número resolve o que o desenho não mostra: a variação vai escrita no rótulo.
+                        _dv = ((_vy - _base_v) / abs(_base_v) * 100) if pd.notna(_base_v) and _base_v else np.nan
+                        _txt_v = f"<b>{_vy:.{_dec_v}f}</b>"
+                        if pd.notna(_dv) and _gx != _g_base:
+                            # aqui a seta mostra a DIREÇÃO sem julgar: o PMG cair quando a população
+                            # sobe é o mecanismo agronômico esperado, não um problema do material.
+                            _seta_v = "▲" if _dv > 0.5 else ("▼" if _dv < -0.5 else "=")
+                            _txt_v += (f"<br><span style='font-size:10px;color:#6B7280'>"
+                                       f"{_seta_v} {_dv:+.1f}% vs {_g_base}</span>")
+                        # o rótulo da barra vive no TERÇO DE BAIXO da barra, longe da faixa onde os
+                        # pontos da linha se concentram. Então o rótulo do ponto sobe por padrão; só
+                        # desce quando o ponto está tão no alto que o texto sairia do gráfico.
+                        _f_var = _vy / _rng_v
+                        if _f_var > 0.90:        # quase no teto: desce, senão o texto sai do gráfico
+                            _shift = -22
+                        elif _f_var < 0.22:      # bem no pé: sobe mais, para escapar do rótulo da barra
+                            _shift = 34
+                        else:
+                            _shift = 20
+                        fig_g.add_annotation(
+                            x=_gx, y=_vy, yref="y2", text=_txt_v,
+                            showarrow=False, yshift=_shift, xanchor="center",
+                            font=dict(size=13, color=_CL_LINHA_G),
+                            bgcolor="rgba(255,255,255,0.88)", bordercolor=_CL_LINHA_G,
+                            borderwidth=1, borderpad=3)
 
                 # ── título dinâmico em linguagem natural ─────────────────────────
                 _sc_ok = _dfg.dropna(subset=["sc"])
@@ -3012,9 +3026,13 @@ parcelas oscila muito: leia o número, mas não decida por ele.
                 _frase_prod = (f"a produção ainda subia na maior densidade testada (<b>{_g_top}</b>)"
                                if _e_ultimo else
                                f"a produção foi maior em <b>{_g_top}</b> e recuou depois")
-                _frase_var = (f"o {_rot_v.split(' (')[0].lower()} <b>{_dir_var}</b>"
-                              + (f" {_pct_var:.0f}% da menor para a maior densidade"
-                                 if pd.notna(_pct_var) else ""))
+                if _var_zerada:
+                    _frase_var = (f"<b>não houve ocorrência</b> de "
+                                  f"{_rot_v.split(' (')[0].lower()} em nenhuma densidade")
+                else:
+                    _frase_var = (f"o {_rot_v.split(' (')[0].lower()} <b>{_dir_var}</b>"
+                                  + (f" {_pct_var:.0f}% da menor para a maior densidade"
+                                     if pd.notna(_pct_var) else ""))
                 st.markdown(f"""
     <div style="margin:0.6rem 0 0.2rem;">
         <p style="font-size:1.1rem;font-weight:700;color:#1A1A1A;margin:0;line-height:1.45;">
@@ -3043,16 +3061,25 @@ parcelas oscila muito: leia o número, mas não decida por ele.
                                            font=dict(size=13, color=_CL_LINHA_G, weight="bold")),
                                 tickfont=dict(size=12, color=_CL_LINHA_G),
                                 range=[0, _rng_v],                  # começa em ZERO, mesma folga da esquerda
+                                visible=not _var_zerada,            # sem série, sem escala pendurada
                                 overlaying="y", side="right", showgrid=False, zeroline=False))
                 st.plotly_chart(fig_g, use_container_width=True)
 
-                st.warning(
-                    f"**Atenção às duas escalas.** As barras são lidas no eixo da **esquerda** "
-                    f"(sc/ha) e os pontos no eixo da **direita** ({_rot_v}). Alturas de séries "
-                    f"diferentes **não se comparam** entre si — um ponto acima de uma barra não "
-                    f"significa nada. Compare cada série com ela mesma, da esquerda para a direita. "
-                    f"Os dois eixos começam em zero de propósito, para que a escala não desloque o "
-                    f"ponto onde as séries parecem se cruzar.")
+                if _var_zerada:
+                    st.info(
+                        f"**{_rot_v.split(' (')[0]} não foi observado nesta seleção.** Todas as "
+                        f"parcelas de todas as densidades foram avaliadas e registraram zero, "
+                        f"então o gráfico mostra só a produtividade — uma linha reta no zero "
+                        f"pareceria medição, e ausência de ocorrência não é o mesmo que medida "
+                        f"igual a zero. Troque a variável para ver um fenômeno com ocorrência.")
+                else:
+                    st.warning(
+                        f"**Atenção às duas escalas.** As barras são lidas no eixo da **esquerda** "
+                        f"(sc/ha) e os pontos no eixo da **direita** ({_rot_v}). Alturas de séries "
+                        f"diferentes **não se comparam** entre si — um ponto acima de uma barra não "
+                        f"significa nada. Compare cada série com ela mesma, da esquerda para a direita. "
+                        f"Os dois eixos começam em zero de propósito, para que a escala não desloque o "
+                        f"ponto onde as séries parecem se cruzar.")
 
                 st.caption(
                     f"Barras claras = produtividade média do grupo, com o valor e a diferença contra "
