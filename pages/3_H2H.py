@@ -1085,7 +1085,7 @@ with tab2:
         unsafe_allow_html=True,
     )
 
-    if df_p1.empty or df_p2.empty:
+    if df_p1.empty:
         st.warning("Dados insuficientes com os filtros atuais.")
     else:
         hibridos_p1_t2 = sorted(df_p1["dePara"].dropna().unique())
@@ -1095,13 +1095,22 @@ with tab2:
             p1_t2 = st.selectbox("Produto 1 (STINE / EXP / DP2)", hibridos_p1_t2, key="p1_t2")
 
         locais_p1_t2 = set(df_p1[df_p1["dePara"] == p1_t2]["cod_fazenda"].dropna().unique())
-        adv_disp = sorted(df_p2[df_p2["cod_fazenda"].isin(locais_p1_t2)]["dePara"].dropna().unique())
+        # ADVERSÁRIO AQUI NÃO PASSA PELO FILTRO DE STATUS DA LATERAL, e é de propósito: esta aba
+        # é um confronto 1 contra 1 que você escolhe a dedo, então limitar a lista a CHECK
+        # atrapalharia justamente a pergunta comum "qual dos meus dois posicionar neste ambiente".
+        # O filtro da lateral continua valendo onde ele faz sentido — nas abas que agregam contra
+        # um universo de adversários (Locais e Todos os Materiais). Aqui vale a regra simples:
+        # qualquer material avaliado nos mesmos locais, menos o próprio Produto 1.
+        _pool_adv = ta_filtrado[(ta_filtrado["cod_fazenda"].isin(locais_p1_t2))
+                                & (ta_filtrado["dePara"] != p1_t2)]
+        _status_adv = _pool_adv.groupby("dePara")["status_material"].first().to_dict()
+        adv_disp = sorted(_status_adv)
 
         with col_b2:
             if adv_disp:
                 p2_t2 = st.selectbox("Produto 2 (adversário)", adv_disp, key="p2_t2")
             else:
-                st.warning("Nenhum adversário com locais em comum para este híbrido.")
+                st.warning("Nenhum outro material foi avaliado nos mesmos locais deste híbrido.")
                 p2_t2 = None
 
         with col_c2:
@@ -1155,8 +1164,9 @@ with tab2:
 
                 _st1 = (df_p1[df_p1["dePara"] == p1_t2]["status_material"].iloc[0]
                         if not df_p1[df_p1["dePara"] == p1_t2].empty else "")
-                _st2 = (df_p2[df_p2["dePara"] == p2_t2]["status_material"].iloc[0]
-                        if not df_p2[df_p2["dePara"] == p2_t2].empty else "")
+                # do pool desta aba: o adversário pode estar fora do filtro de status da lateral,
+                # e aí `df_p2` não o teria — o rótulo sairia vazio no cabeçalho
+                _st2 = _status_adv.get(p2_t2, "")
 
                 st.markdown(
                     f'<div style="margin:0.5rem 0 0.2rem;">'
@@ -1181,6 +1191,22 @@ with tab2:
 
 Confronto direto entre **Produto 1** e **Produto 2** nos locais onde **ambos foram avaliados
 simultaneamente**.
+
+O adversário não precisa ser um concorrente: a lista traz **todos os materiais avaliados nos
+mesmos locais** do Produto 1, com o status ao lado do nome — CHECK, STINE, EXP ou DP2. Dá para
+confrontar dois materiais do próprio portfólio, útil para decidir posicionamento entre eles ou
+para medir um experimental contra o híbrido que ele pretende substituir. O próprio Produto 1 fica
+fora da lista.
+
+Esta aba **não** usa o filtro Status do Adversário da barra lateral: aqui você escolhe o par a
+dedo, e limitar a lista atrapalharia. O filtro continua valendo nas abas que agregam contra um
+universo de adversários (Locais e Todos os Materiais). Os filtros de local, safra e responsável
+valem aqui normalmente.
+
+> Ao comparar dois materiais Stine, lembre que "vitória" e "derrota" continuam sendo do ponto de
+vista do Produto 1. Não é disputa de mercado, é escolha de qual dos dois posicionar naquele
+ambiente — e empate, aqui, é resposta legítima: significa que a decisão pode ser tomada por outro
+critério, como sanidade, estande ou disponibilidade de semente.
 
 ---
 
