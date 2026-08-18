@@ -1006,6 +1006,64 @@ def _gold_av4(tb_av4: pd.DataFrame) -> tuple:
 # ══════════════════════════════════════════════════════════════════════════════
 
 CHAVE = ["fazendaRef", "idBaseRef", "tipoTeste", "indexTratamento"]
+
+# ── Plots duplicados por cadastro repetido ────────────────────────────────────
+# A CHAVE acima é TÉCNICA: identifica o registro. Quando o mesmo ensaio é cadastrado duas vezes
+# na fazenda, cada tratamento ganha dois `idBaseRef` e vira dois plots — mesmo material, mesmo
+# local, mesmo tratamento. Foi o caso de BAL-MA_25_2 em 25/26: 72 parcelas para 36 híbridos, com
+# a colheita digitada nas duas cópias e o detalhe (PMG, alturas) em só uma.
+#
+# A chave LÓGICA descreve o que o plot É, não como foi cadastrado. Colapsar por ela resolve as
+# duas origens possíveis do problema — cadastro duplicado (dois idBaseRef) e fan-out no merge
+# (mesma CHAVE em dois registros de um gold) — e tem um efeito colateral bom: as duas metades
+# se juntam, e o plot volta completo em vez de sobrar a metade sem detalhe.
+#
+# PREMISSA: nenhum ensaio da rede tem repetição do mesmo tratamento no mesmo local (confirmado
+# com o time). Se isso mudar, o colapso passaria a MEDIAR repetições legítimas e reduzir o n —
+# por isso a constante abaixo, e por isso todo grupo colapsado entra no relatório.
+CHAVE_LOGICA = ["cod_fazenda", "dePara", "tipoTeste", "indexTratamento"]
+COLAPSAR_DUPLICATAS = True
+
+# preenchido durante a execução do pipeline e devolvido em rodar_pipeline() para o Diagnóstico.
+# É limpo no início de cada execução; em execução vinda do cache, o relatório vem cacheado junto.
+_RELATORIO_DUPLICATAS = []
+
+
+def _colapsar_duplicatas(tab: pd.DataFrame, rotulo: str = "") -> pd.DataFrame:
+    """Uma linha por plot LÓGICO (ver CHAVE_LOGICA). Numérico vira média, texto vira o primeiro
+    valor não nulo — é isso que reúne as metades de um plot cadastrado duas vezes.
+
+    Registra em `_RELATORIO_DUPLICATAS` cada grupo colapsado, com quantos cadastros existiam.
+    Não silencia: corrige e deixa rastro para o Diagnóstico mostrar.
+    """
+    if not COLAPSAR_DUPLICATAS or tab.empty:
+        return tab
+    chave = [c for c in CHAVE_LOGICA if c in tab.columns]
+    if len(chave) < len(CHAVE_LOGICA):
+        return tab                                   # sem a chave completa, não arrisca
+    _dup = tab.duplicated(subset=chave, keep=False)
+    if not _dup.any():
+        return tab
+
+    _rel = (tab[_dup].groupby(chave, dropna=False, as_index=False)
+            .agg(cadastros=("idBaseRef", "nunique"), linhas=("idBaseRef", "size")))
+    _RELATORIO_DUPLICATAS.append(_rel.assign(tabela=rotulo))
+    print(f"[duplicatas] {rotulo}: {len(_rel)} plot(s) com cadastro repetido "
+          f"({int(_dup.sum())} linhas viram {len(_rel)}) — "
+          f"locais: {sorted(_rel['cod_fazenda'].unique())}")
+
+    _num = [c for c in tab.columns
+            if c not in chave and pd.api.types.is_numeric_dtype(tab[c])]
+    _txt = [c for c in tab.columns if c not in chave and c not in _num]
+
+    def _primeiro(s):
+        s = s.dropna()
+        return s.iloc[0] if len(s) else np.nan
+
+    agg = {**{c: "mean" for c in _num}, **{c: _primeiro for c in _txt}}
+    out = tab.groupby(chave, dropna=False, as_index=False, sort=False).agg(agg)
+    return out[[c for c in tab.columns]]              # ordem original das colunas
+
 CONTEXTO = ["cod_fazenda", "nomeFazenda", "nomeProdutor", "cidade_nome", "estado_sigla",
             "regiao_macro", "regiao_micro", "safra", "epoca", "nome", "dePara",
             "status_material", "tratamento_semente", "pop_tratamento", "nomeResponsavel",
@@ -1056,6 +1114,10 @@ def _consolidar_tipo(tipo_teste: str, base_plots: pd.DataFrame, golds: dict) -> 
         d = d[d["tipoTeste"] == tipo_teste]
         cols = CHAVE + [c for c in met if c in d.columns]
         tab = tab.merge(d[cols], on=CHAVE, how="left")
+    # o colapso vem DEPOIS dos merges, de propósito: cada cópia já pegou as métricas do cadastro
+    # dela, então unir as duas aqui recompõe o plot inteiro. Colapsar antes deixaria o detalhe
+    # preso no idBaseRef descartado.
+    tab = _colapsar_duplicatas(tab, rotulo=f"tabela_analitica_{tipo_teste.lower()}")
     return tab.reset_index(drop=True)
 
 
@@ -1080,6 +1142,7 @@ def rodar_pipeline() -> dict:
       e os golds por avaliação (av1..av4) para páginas que precisem do grão fino.
     """
     supabase = get_supabase_2025()
+    _RELATORIO_DUPLICATAS.clear()      # relatório desta execução (ver _colapsar_duplicatas)
 
     # 1) Extração (bronze) + silver
     dfs_cru = {t: _extrair(supabase, t) for t in TABELAS}
@@ -1128,6 +1191,10 @@ def rodar_pipeline() -> dict:
         "av3_gold": tb_av3_gold, "av4_gold": tb_av4_gold,
         "av3_detalhe": tb_av3_detalhe, "av4_detalhe": tb_av4_detalhe,
         # dados de apoio para o Diagnóstico (integridade estrutural):
+        # plots que existiam em duplicidade e foram colapsados (cadastro repetido do ensaio):
+        "duplicatas": (pd.concat(_RELATORIO_DUPLICATAS, ignore_index=True)
+                       if _RELATORIO_DUPLICATAS else pd.DataFrame(
+                           columns=CHAVE_LOGICA + ["cadastros", "linhas", "tabela"])),
         "tratamento_base": df_tb.assign(safra="25/26"),   # catálogo de tratamentos + safra
         "fazendas": df_fazenda,        # fazendas enriquecidas (responsável, cidade, região)
     }

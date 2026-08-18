@@ -29,6 +29,7 @@ from pipeline_milho_2025 import (
     _gold_av1, _gold_av2, _gold_av3, _gold_av3_detalhe,
     _gold_av4_produtividade, _gold_av4_detalhe, _gold_av4_consolidar,
     _montar_base_plots, _consolidar_tipo, _unificar_detalhe,
+    _RELATORIO_DUPLICATAS, CHAVE_LOGICA,      # colapso de plots com cadastro duplicado
     regua_peso_2024, regua_pmg_2024, COLS_ESTANDE_5SUB,
     METROS_CONTAGEM, N_SUBAMOSTRAS_2024,
     CONFIG_DIR,
@@ -92,6 +93,7 @@ def rodar_pipeline() -> dict:
     base_detalhe, detalhe_fotos, e os golds por avaliação. As colunas novas de 2025 (qualidade_plot_inicial,
     nota_empalhamento) simplesmente não existem aqui — entram como ausentes no empilhamento."""
     supabase = get_supabase_2024()
+    _RELATORIO_DUPLICATAS.clear()      # relatório desta execução (ver _colapsar_duplicatas)
 
     # 1) Extração (bronze) + silver — funções idênticas às de 2025
     dfs_cru = {t: _extrair(supabase, t) for t in TABELAS}
@@ -140,6 +142,10 @@ def rodar_pipeline() -> dict:
         "av3_gold": tb_av3_gold, "av4_gold": tb_av4_gold,
         "av3_detalhe": tb_av3_detalhe, "av4_detalhe": tb_av4_detalhe,
         # dados de apoio para o Diagnóstico (integridade estrutural):
+        # plots que existiam em duplicidade e foram colapsados (cadastro repetido do ensaio):
+        "duplicatas": (pd.concat(_RELATORIO_DUPLICATAS, ignore_index=True)
+                       if _RELATORIO_DUPLICATAS else pd.DataFrame(
+                           columns=CHAVE_LOGICA + ["cadastros", "linhas", "tabela"])),
         "tratamento_base": df_tb.assign(safra="24/25"),
         "fazendas": df_fazenda,
     }

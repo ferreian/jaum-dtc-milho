@@ -781,6 +781,67 @@ if not tratamento_base.empty and "idBaseRef" in plots_all.columns:
               "Chave única do tratamento (uuid) não disponível para cruzar.",
               None, ok_texto="não verificável")
 
+# ── V6: ensaios cadastrados em duplicidade (colapsados pelo pipeline) ─────────
+# O pipeline já colapsa esses plots (ver CHAVE_LOGICA / _colapsar_duplicatas no
+# pipeline_milho_2025) — as análises estão corretas. O cartão existe para o problema não passar
+# despercebido: quem digita continua vendo o ensaio repetido no app, e o cadastro segue duplicado
+# no banco. É diagnóstico da ORIGEM, não da análise.
+_dups = []
+for _s, _d in safras_sel:
+    _t = _d.get("duplicatas")
+    if isinstance(_t, pd.DataFrame) and not _t.empty:
+        _t = _t.copy()
+        if "safra" not in _t.columns:
+            _t["safra"] = _s
+        _dups.append(_t)
+_dup = pd.concat(_dups, ignore_index=True) if _dups else pd.DataFrame()
+
+if not _dup.empty:
+    # uma linha por plot lógico; o que interessa ao time é o LOCAL e quantos tratamentos vieram
+    # em dobro, não a lista de 36 híbridos repetida
+    _dup_loc = (_dup.groupby([c for c in ["safra", "cod_fazenda", "tabela"] if c in _dup.columns],
+                             dropna=False, as_index=False)
+                .agg(_plots_afetados=("dePara", "nunique"),
+                     _cadastros_por_plot=("cadastros", "max")))
+    _dup_loc = _dup_loc.rename(columns={"_plots_afetados": "Plots em duplicidade",
+                                        "_cadastros_por_plot": "Cadastros por plot",
+                                        "tabela": "Tabela"})
+    n_dup = len(_dup_loc)
+else:
+    _dup_loc, n_dup = pd.DataFrame(), 0
+
+_card("Ensaios cadastrados em duplicidade", n_dup,
+      "Locais em que o mesmo tratamento existe com mais de um cadastro — o ensaio foi criado "
+      "duas vezes na fazenda. O pipeline já uniu as cópias (média dos valores, que são idênticos, "
+      "e o detalhe de uma completa a outra), então as análises e os exports estão corretos. "
+      "O que fica pendente é a origem: o cadastro repetido continua no banco e na tela do app. "
+      "Se aparecer 3 em 'Cadastros por plot', o ensaio foi recriado mais de uma vez — vale falar "
+      "com o responsável antes que vire hábito.",
+      _dup_loc if n_dup else None,
+      ok_texto="nenhum cadastro repetido",
+      chave="duplicidadecadastro",
+      ajuda="""
+**O que é**
+
+Cada plot é identificado por local, material, tipo de ensaio e número do tratamento. Quando o
+ensaio é cadastrado duas vezes na mesma fazenda, cada tratamento passa a ter **dois registros**
+para a mesma combinação — mesmo híbrido, mesmo local, mesmo tratamento.
+
+**Por que importa mesmo estando corrigido**
+
+Sem a correção, o local entraria nas contagens com o dobro de parcelas, e o detalhe ficaria
+partido: uma cópia com a colheita, outra com a colheita mais PMG e alturas. O pipeline une as
+duas e recompõe o plot inteiro. Os números que você vê no painel já estão certos.
+
+**O que fazer**
+
+- Conferir no Supabase qual dos cadastros tem as avaliações completas **antes** de apagar o outro
+  — em cada par, só um lado costuma ter o detalhe.
+- Não mexer no banco enquanto o time estiver lançando dado.
+- Se o mesmo local reaparecer aqui em safras seguidas, o problema é de fluxo no app, não de
+  digitação pontual.
+""")
+
 st.divider()
 
 # ══════════════════════════════════════════════════════════════════════════════
