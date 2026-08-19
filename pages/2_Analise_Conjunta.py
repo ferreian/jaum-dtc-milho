@@ -915,23 +915,147 @@ _cum = "sc_ha" if unid_um == "sc/ha" else "kg_ha"
 _dum = 1 if unid_um == "sc/ha" else 0
 
 # ── Cálculo: média de produtividade e de umidade por híbrido (conforme filtros) ──
+# ESCALA ABSOLUTA vs RELATIVA AO LOCAL
+# Na absoluta, a média de cada híbrido carrega o efeito de ONDE ele foi testado: um material
+# avaliado só em locais fracos aparece embaixo mesmo tendo ido bem em todos eles. Como a rede é
+# desbalanceada (nem todo híbrido está em todo local), isso distorce a comparação entre pontos.
+# Na relativa, cada parcela é comparada com o SEU ensaio antes de virar média — o efeito de local
+# sai, e o que sobra é desempenho.
+# SÓ A PRODUTIVIDADE é relativizada. A umidade continua em % de colheita, absoluta: é assim que
+# ela é lida em campo ("colhe a 18%"), e é o número que decide secagem e logística. Relativizada,
+# viraria "1,8 ponto abaixo da referência" — perde o valor que interessa e ainda esbarra em
+# "umidade relativa" já significar outra coisa.
+# A referência é a DO PRÓPRIO LOCAL (média, maior ou testemunha daquele ensaio), calculada sobre
+# todos os híbridos avaliados ali. Difere da Descritiva de propósito: lá a referência é única
+# para o conjunto e só renumera o eixo; aqui ela muda a posição de cada ponto, que é o que
+# desconta o ambiente.
+_esc_c1, _esc_c2, _esc_c3 = st.columns([2, 2, 2])
+with _esc_c1:
+    # contra QUEM (média/maior/testemunha) é o seletor ao lado
+    _esc_um = st.radio(
+        "Escala da produtividade", ["Absoluta", "Relativa"], horizontal=True, key="escala_um",
+        help="Relativa: a produtividade vira índice contra a referência escolhida ao lado "
+             "(100 = referência). A umidade continua em % de colheita nas duas escalas. "
+             "Vale só para este gráfico.")
+_rel_um = (_esc_um == "Relativa")
+
+with _esc_c2:
+    if _rel_um:
+        # seletor PRÓPRIO, independente do da Auditoria e do Desempenho: são perguntas
+        # diferentes e mudar um não deve mexer nos outros. As bases são as mesmas, para a
+        # leitura ser a mesma.
+        _base_um_sel = st.selectbox("Relativizar pela produção do local",
+                                    ["Média do ensaio", "Maior produtividade", "Testemunha"],
+                                    index=0, key="base_um")
+    else:
+        _base_um_sel = None
+with _esc_c3:
+    if _rel_um and _base_um_sel == "Testemunha":
+        _tests_um = sorted(ta_filtrado[ta_filtrado["status_material"].isin(["CHECK", "STINE"])]
+                           ["dePara"].dropna().unique().tolist())
+        _test_um = st.selectbox("Testemunha", _tests_um, key="test_um") if _tests_um else None
+    else:
+        _test_um = None
+    # só na escala relativa, junto dos demais controles de relativização. Multiselect em vez de
+    # checkbox: com os quatro status são oito linhas, e quase sempre a comparação que interessa
+    # é de dois grupos (o seu contra os CHECK), não de todos contra todos.
+    if _rel_um:
+        _st_disp = [s for s in COR_STATUS_PLOT
+                    if s in set(ta_filtrado["status_material"].dropna().unique())]
+        _status_linhas = st.multiselect(
+            "Linhas de média por status", _st_disp, default=_st_disp, key="lin_status_um",
+            help="Traça a média do grupo nos dois eixos: a horizontal na produtividade relativa "
+                 "e a vertical na umidade média. O cruzamento é o centro de massa do status.")
+    else:
+        _status_linhas = []
+
+    # DESTACAR HÍBRIDO: mesmas linhas de média das do status, um nível abaixo — a horizontal na
+    # produtividade relativa do híbrido e a vertical na umidade dele. Sólidas, para separar de
+    # grupo (tracejado) e material (sólido) num relance.
+    _hib_detalhe = st.multiselect(
+        "Linhas de média por híbrido",
+        # opções de `ta_filtrado`: o widget é montado ANTES de `_base_um` existir
+        options=sorted(ta_filtrado.loc[ta_filtrado[_cum] > 0, "dePara"]
+                       .dropna().unique().tolist()),
+        default=[], key="det_hib_um", max_selections=6,
+        help="Traça a média do híbrido nos dois eixos, em linha sólida, para comparar com a "
+             "média do status ou de outro material.")
+
+_base_um = ta_filtrado[ta_filtrado[_cum] > 0].copy()
+
+if _rel_um:
+    # Referência DE CADA LOCAL, como na Auditoria: cada parcela é comparada com o próprio ensaio
+    # ANTES de virar média do híbrido. É o que corrige rede desbalanceada — um material avaliado
+    # só em locais fracos deixa de aparecer embaixo por causa de onde foi testado. Relativizar
+    # por uma referência única do conjunto não faria isso: seria dividir todos os pontos pela
+    # mesma constante, ou seja, o mesmo gráfico com outra numeração no eixo.
+    # A referência sai do ENSAIO INTEIRO (todos os híbridos daquele local, via ta_raw + filtros
+    # de local), não dos filtrados: o filtro de material muda quem aparece, não o 100%.
+    if _base_um_sel == "Maior produtividade":
+        _ref_um = _ref_scope.groupby(LOCAL)[_cum].max()
+    elif _base_um_sel == "Testemunha" and _test_um:
+        _ref_um = _ref_scope[_ref_scope["dePara"] == _test_um].groupby(LOCAL)[_cum].mean()
+    else:
+        _ref_um = _ref_scope.groupby(LOCAL)[_cum].mean()
+    _k_um = _base_um.set_index(LOCAL).index
+    _base_um["_ref_prod"] = pd.Series(_k_um.map(_ref_um).to_numpy(), index=_base_um.index)
+    _base_um["_y_um"] = (_base_um[_cum] / _base_um["_ref_prod"]) * 100
+    _base_um["_x_um"] = _base_um["umidade_pct"]      # umidade fica ABSOLUTA (ver acima)
+
+else:
+    _base_um["_y_um"] = _base_um[_cum]
+    _base_um["_x_um"] = _base_um["umidade_pct"]
+
 df_um = (
-    ta_filtrado[ta_filtrado[_cum] > 0]
+    _base_um
     .groupby("dePara")
     .agg(
-        media_sc = (_cum, "mean"),
-        umidade  = ("umidade_pct", "mean"),
+        media_sc = ("_y_um", "mean"),
+        umidade  = ("_x_um", "mean"),
         status   = ("status_material", "first"),
     )
     .reset_index()
     .dropna(subset=["umidade"])
 )
-df_um["media_sc"] = df_um["media_sc"].round(_dum)
+_dec_um = 1 if _rel_um else _dum
+df_um["media_sc"] = df_um["media_sc"].round(_dec_um)
 df_um["umidade"] = df_um["umidade"].round(1)
+
+_alvo_ref = {"Maior produtividade": "ao maior produtor",   # do local, não da rede
+             "Testemunha": f"à testemunha ({_test_um})" if _test_um else "à testemunha"
+             }.get(_base_um_sel, "à média do ensaio")
+_nome_ref = f"{_alvo_ref} de cada local"
+_tit_x = "Umidade média de colheita (%)"       # sempre absoluta, nas duas escalas
+_tit_y = (f"Produtividade relativa {_nome_ref} (100 = referência)" if _rel_um
+          else f"Produtividade média ({unid_um})")
 
 if df_um.empty:
     st.info("Sem dados de umidade para os filtros selecionados.")
 else:
+    # ONDE AS LINHAS HORIZONTAIS VÃO PASSAR — calculado ANTES dos pontos porque o rótulo de cada
+    # ponto precisa saber disso. O nome fica acima do marcador por padrão; quando uma linha corta
+    # justamente essa faixa, o texto vai para baixo. Sem isso a linha risca o nome no meio, que é
+    # o que acontecia com os materiais de produtividade próxima à média do grupo.
+    _linhas_y = []
+    if _status_linhas:
+        _linhas_y += df_um[df_um["status"].isin(_status_linhas)].groupby("status")["media_sc"] \
+                     .mean().tolist()
+    if _hib_detalhe:
+        _linhas_y += df_um[df_um["dePara"].isin(_hib_detalhe)]["media_sc"].tolist()
+    if _rel_um:
+        _linhas_y.append(100.0)
+    # a banda é a altura do rótulo (~26px) convertida em unidades do eixo: depende da altura do
+    # gráfico e da faixa de valores, então é calculada, não chutada em porcentagem
+    _ALT_FIG, _PX_ROTULO = 980, 26
+    _alt_plot = _ALT_FIG - 60 - (70 + (95 if _status_linhas else 0) + (60 if _hib_detalhe else 0))
+    _faixa_y = (df_um["media_sc"].max() - df_um["media_sc"].min()) or 1
+    _banda = _faixa_y * (_PX_ROTULO / max(_alt_plot, 200))
+
+    def _pos_rotulo(_yv):
+        """'bottom center' quando há linha na faixa onde o nome cairia; senão 'top center'."""
+        return ("bottom center"
+                if any(_yv < _ly <= _yv + _banda for _ly in _linhas_y) else "top center")
+
     fig_um = go_plt.Figure()
     for status, cor in COR_STATUS_PLOT.items():
         df_s = df_um[df_um["status"] == status]
@@ -940,12 +1064,15 @@ else:
         fig_um.add_trace(go_plt.Scatter(
             x=df_s["umidade"], y=df_s["media_sc"],
             mode="markers+text", name=status,
-            text=df_s["dePara"], textposition="top center",
+            text=df_s["dePara"],
+            textposition=[_pos_rotulo(_v) for _v in df_s["media_sc"]],
             textfont=dict(size=13, color="#333333", weight="bold"),
             marker=dict(color=cor, size=14,
                         line=dict(color=COR_BORDA.get(status, "#888"), width=1.5), opacity=0.9),
-            hovertemplate=("<b>%{text}</b><br>Umidade: %{x:.1f}%<br>Média: %{y:,." + str(_dum)
-                           + "f} " + unid_um + "<extra></extra>"),
+            hovertemplate=("<b>%{text}</b><br>Umidade: %{x:.1f}%<br>"
+                           + ("Produtividade: %{y:.1f}% da referência" if _rel_um else
+                              "Média: %{y:,." + str(_dum) + "f} " + unid_um)
+                           + "<extra></extra>"),
         ))
 
     # Linha de tendência (regressão linear simples)
@@ -960,201 +1087,172 @@ else:
             line=dict(color="#AAAAAA", width=1.5, dash="dash"), hoverinfo="skip",
         ))
 
+    # FAIXA FIXA DOS EIXOS: mantida porque as linhas de média (status e híbrido) são desenhadas
+    # como shapes e não entram no autorange do Plotly — sem faixa definida, uma média fora da
+    # nuvem de pontos ficaria pela metade, cortada na borda.
+    _px = (df_um["umidade"].max() - df_um["umidade"].min()) * 0.06 or 0.5
+    _py = (df_um["media_sc"].max() - df_um["media_sc"].min()) * 0.08 or 1.0
+    _xs_ref = [df_um["umidade"].min(), df_um["umidade"].max()]
+    _ys_ref = [df_um["media_sc"].min(), df_um["media_sc"].max()]
+    if _rel_um:
+        _ys_ref.append(100)                     # a linha de referência também tem de caber
+    _xr = [min(_xs_ref) - _px, max(_xs_ref) + _px]
+    _yr = [min(_ys_ref) - _py, max(_ys_ref) + _py]
+
     fig_um.update_layout(
-        height=500, plot_bgcolor="#F5F5F5", paper_bgcolor="#FFFFFF",
+        # gráfico alto: são 43 pontos com rótulo, e a altura é o que separa materiais de
+        # produtividade parecida — a largura já vem do container
+        height=_ALT_FIG, plot_bgcolor="#F5F5F5", paper_bgcolor="#FFFFFF",
         font=dict(family="Helvetica Neue, sans-serif", size=13, color="#111111"),
         xaxis=dict(
-            title=dict(text="<b>Umidade média de colheita (%)</b>", font=dict(size=14, color="#111111")),
+            # standoff afasta o título dos rótulos de umidade dos status, que ficam logo abaixo
+            # dos ticks — sem ele, os dois se sobrepõem
+            title=dict(text=f"<b>{_tit_x}</b>", font=dict(size=14, color="#111111"),
+                       standoff=(74 if _status_linhas else 12) + (52 if _hib_detalhe else 0)),
             tickfont=dict(size=12, color="#111111", weight="bold"),
             gridcolor="#FFFFFF", gridwidth=1.5, zeroline=False,
-            showline=True, linecolor="#CCCCCC", linewidth=1),
+            showline=True, linecolor="#CCCCCC", linewidth=1, range=_xr),
         yaxis=dict(
-            title=dict(text=f"<b>Produtividade média ({unid_um})</b>", font=dict(size=14, color="#111111")),
+            title=dict(text=f"<b>{_tit_y}</b>", font=dict(size=14, color="#111111")),
             tickfont=dict(size=12, color="#111111", weight="bold"),
             gridcolor="#FFFFFF", gridwidth=1.5, zeroline=False,
-            showline=True, linecolor="#CCCCCC", linewidth=1),
+            showline=True, linecolor="#CCCCCC", linewidth=1, range=_yr),
         legend=dict(
             title=dict(text="<b>Status</b>", font=dict(size=13, color="#111111")),
             orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
             font=dict(size=13, color="#111111", weight="bold")),
-        margin=dict(t=60, b=60, l=70, r=40),
+        # b: rótulos de umidade em duas alturas + título afastado · r: os de produtividade
+        margin=dict(t=60,
+                    b=70 + (95 if _status_linhas else 0) + (60 if _hib_detalhe else 0),
+                    l=75, r=110),
     )
 
+    if _rel_um:
+        # os dois eixos ganham origem com significado: 100 = produz como a referência,
+        # 0 pp = colhe na mesma umidade dela
+        fig_um.add_hline(y=100, line=dict(color="#9AA5B1", width=1.5, dash="dot"))
+        fig_um.add_trace(go_plt.Scatter(   # só para entrar na legenda
+            x=[None], y=[None], mode="lines", name="referência = 100",
+            line=dict(color="#9AA5B1", width=1.5, dash="dot"), hoverinfo="skip"))
+
+    # ── médias por status: compara GRUPOS, não pontos ──────────────────────────
+    # A horizontal é a média de produtividade do status; a vertical, a de umidade. O cruzamento
+    # das duas é o centro de massa daquele grupo — dá para ver de relance se o portfólio STINE
+    # está, em média, acima e mais seco que os concorrentes.
+    if _status_linhas:
+        _med_st = (df_um[df_um["status"].isin(_status_linhas)].groupby("status")
+                   .agg(_y=("media_sc", "mean"), _x=("umidade", "mean"), _n=("dePara", "size"))
+                   .reset_index())
+        for _, _r in _med_st.iterrows():
+            _cor_st = COR_STATUS_PLOT.get(_r["status"], "#888888")
+            _cor_ln = COR_BORDA.get(_r["status"], _cor_st)   # borda: legível sobre fundo claro
+            fig_um.add_hline(y=_r["_y"], line=dict(color=_cor_ln, width=3, dash="dash"))
+            fig_um.add_vline(x=_r["_x"], line=dict(color=_cor_ln, width=2, dash="dot"))
+
+        # VALORES NA MARGEM, cada um no eixo a que pertence: produtividade relativa na lateral
+        # direita (é leitura do eixo Y) e umidade embaixo (leitura do eixo X). Fora da área de
+        # plotagem eles não cobrem ponto nenhum. Como dois status podem ter umidade quase igual,
+        # os rótulos de baixo alternam de altura em vez de se sobreporem.
+        _ordem_x = _med_st.sort_values("_x").reset_index(drop=True)
+        for _i, _r in _ordem_x.iterrows():
+            _c = COR_BORDA.get(_r["status"], COR_STATUS_PLOT.get(_r["status"], "#888888"))
+            fig_um.add_annotation(
+                x=_r["_x"], xref="x", y=0, yref="paper", yanchor="top",
+                # abaixo dos NÚMEROS do eixo (que ocupam ~20px), não na mesma linha deles:
+                # a -6 o rótulo caía em cima do tick quando a média batia perto de um valor
+                # inteiro. Duas alturas alternadas, para status com umidade parecida não colidirem.
+                yshift=-46 if _i % 2 else -24, showarrow=False,
+                text=f"<b>{_r['status']} {_r['_x']:.1f}%</b>",
+                font=dict(size=12, color=_c))
+        for _, _r in _med_st.iterrows():
+            _c = COR_BORDA.get(_r["status"], COR_STATUS_PLOT.get(_r["status"], "#888888"))
+            fig_um.add_annotation(
+                x=1.005, xref="paper", xanchor="left", y=_r["_y"], yref="y",
+                showarrow=False, text=f"<b>{_r['status']} {_r['_y']:.1f}%</b>",
+                font=dict(size=12, color=_c))
+
+    # ── híbridos detalhados: mesmas linhas dos status, SÓLIDAS ─────────────────
+    # Mesma leitura das tracejadas de status, um nível abaixo: a horizontal na produtividade
+    # média do híbrido e a vertical na umidade média dele. Sólidas para diferenciar do grupo.
+    # Os rótulos ficam do lado OPOSTO aos de status — produtividade à esquerda, umidade em cima —
+    # para as duas famílias não disputarem a mesma margem.
+    if _hib_detalhe:
+        _y_status = (df_um[df_um["status"].isin(_status_linhas)].groupby("status")["media_sc"]
+                     .mean().tolist() if _status_linhas else [])
+        _med_hib_det = (df_um[df_um["dePara"].isin(_hib_detalhe)]
+                        .set_index("dePara").reindex(_hib_detalhe).dropna(how="all"))
+        for _i, (_h, _r) in enumerate(_med_hib_det.iterrows()):
+            # cor do STATUS do material, não de uma paleta própria: assim a linha do híbrido e a
+            # tracejada do grupo dele são da mesma família, e a comparação que interessa (o
+            # material contra a média do próprio status) se lê pela distância entre duas linhas
+            # da mesma cor. Sólida contra tracejada é o que separa uma da outra.
+            _cor_h = COR_BORDA.get(_r["status"], COR_STATUS_PLOT.get(_r["status"], "#555555"))
+            # de ponta a ponta, não só até o ponto: a linha é referência de leitura do gráfico
+            # inteiro — dá para conferir quais materiais ficam acima ou abaixo dela
+            fig_um.add_hline(y=_r["media_sc"], line=dict(color=_cor_h, width=3), layer="below")
+            fig_um.add_vline(x=_r["umidade"], line=dict(color=_cor_h, width=2), layer="below")
+            # mesma coluna e mesmo formato dos rótulos de status, colados no eixo. Só quando a
+            # média do híbrido cai quase em cima da do grupo dele o rótulo sobe alguns pixels,
+            # para os dois não se escreverem por cima.
+            _colide = any(abs(_r["media_sc"] - _ly) < _banda for _ly in _y_status)
+            fig_um.add_annotation(
+                x=1.005, xref="paper", xanchor="left", y=_r["media_sc"], yref="y",
+                yshift=14 if _colide else 0,
+                showarrow=False, text=f"<b>{_h} {_r['media_sc']:.1f}%</b>",
+                font=dict(size=12, color=_cor_h))
+            fig_um.add_annotation(
+                x=_r["umidade"], xref="x", y=0, yref="paper", yanchor="top",
+                # abaixo dos rótulos de status quando eles estão ligados, senão colidem: as duas
+                # famílias marcam umidade e podem cair no mesmo ponto do eixo
+                yshift=(-70 if _status_linhas else -24) - (22 if _i % 2 else 0),
+                showarrow=False,
+                text=f"<b>{_h} {_r['umidade']:.1f}%</b>",
+                font=dict(size=12, color=_cor_h))
+
     st.plotly_chart(fig_um, use_container_width=True)
-    st.caption(
-        f"ℹ️ Cada ponto = média do híbrido no conjunto filtrado, em **{unid_um}** (produtividade e "
-        "umidade de colheita). "
-        "Linha tracejada = tendência linear entre umidade e produtividade. Pontos acima da linha "
-        "produzem mais que o esperado para a sua umidade de colheita.")
-
-st.divider()
-
-# ════════════════════════════════════════════════════════════════════════════════
-# SEÇÃO 3B — UMIDADE × PRODUTIVIDADE DENTRO DO LOCAL
-#
-# A Seção 3 faz o mesmo cruzamento sobre a MÉDIA DA REDE, e ali umidade e
-# produtividade carregam efeito de onde cada híbrido foi testado. Dentro de um
-# local isso desaparece: mesmo dia de plantio, mesmo dia de colheita, mesmo solo e
-# mesmo clima para todos. A diferença de umidade entre dois pontos aqui é
-# diferença de ciclo, e nada mais.
-# ════════════════════════════════════════════════════════════════════════════════
-secao_titulo(
-    "Umidade × Produtividade dentro do local",
-    "Num único ensaio, quem colheu mais seco e quem produziu mais?",
-    "Todos os híbridos de um local foram plantados e colhidos no mesmo dia. Isso torna a "
-    "comparação de umidade entre eles limpa de ambiente — o que sobra é ciclo.",
-)
-
-with st.popover("ℹ️ Como interpretar · Umidade dentro do local", use_container_width=False):
-    st.markdown("""
-**📌 O que este gráfico mostra**
-
-Cada ponto é **um híbrido naquele local**. No eixo X, a umidade de colheita dele ali. No eixo Y,
-a produtividade dele ali.
-
-**Por que dentro do local e não na média da rede:** a Seção 3 faz o mesmo cruzamento sobre médias
-da rede, e lá a umidade de um híbrido depende de onde ele foi testado. Aqui não — data de plantio,
-data de colheita, solo e clima são os mesmos para todos os pontos do gráfico. A diferença de
-umidade entre dois híbridos é diferença de ciclo, limpa.
-
----
-
-**🔢 Como é calculado**
-
-1. Filtra o local escolhido e descarta as parcelas sinalizadas com `umidade_baixa` ou
-   `umidade_alta` — fora da faixa sã de 10 a 40%.
-2. Média por híbrido naquele local, de umidade e de produtividade.
-3. Reta de tendência linear entre as duas, quando há ao menos 3 híbridos.
-
----
-
-**📐 Como ler**
-
-| O que você vê | O que significa |
-|---|---|
-| **Ponto mais à esquerda** | colheu mais seco ali — mais precoce neste ensaio |
-| **Ponto mais à direita** | colheu mais úmido — mais tardio |
-| **Ponto acima da reta** | produziu mais do que o esperado para o ciclo dele |
-| **Reta subindo** | neste local, ciclo mais longo virou produtividade |
-| **Reta plana** | o ciclo não explicou a produtividade aqui; a diferença veio de outra coisa |
-
-> O canto **superior esquerdo** é a posição mais valiosa: produziu bem e colheu seco. O canto
-inferior direito é a pior: ficou no campo e não pagou por isso.
-
----
-
-**🧭 Exemplo de uso**
-
-1. Escolha um local que interessa ao produtor — de preferência um da região dele.
-2. Veja onde o seu material cai em relação à reta. Acima dela é argumento; abaixo, não.
-3. Compare a umidade dele com a dos concorrentes **daquele ensaio**: dois pontos percentuais a
-   menos são dois pontos que o produtor não paga em secagem.
-4. Troque de local e veja se a posição se mantém. Se mudar muito, a leitura é do local e não do
-   híbrido — e aí a Secagem relativa, logo abaixo, é a que responde.
-
----
-
-**⚠️ Cuidados**
-
-- **Um local é um local.** O que aparece aqui não vale para a rede; para generalizar, use a
-  Seção 3 ou a de secagem relativa.
-- **A reta é do local**, ajustada com os híbridos daquele ensaio. Com poucos híbridos, ela é
-  frágil — o número entra na legenda abaixo do gráfico.
-""")
-
-_base_loc_um = ta_filtrado.copy()
-if "umidade_pct" in _base_loc_um.columns:
-    _base_loc_um = _base_loc_um[pd.to_numeric(_base_loc_um["umidade_pct"], errors="coerce").notna()]
-    if "flags_produtividade" in _base_loc_um.columns:
-        _flg = _base_loc_um["flags_produtividade"].astype(str)
-        _base_loc_um = _base_loc_um[~_flg.str.contains("umidade_baixa|umidade_alta", na=False)]
-else:
-    _base_loc_um = _base_loc_um.iloc[0:0]
-
-if _base_loc_um.empty:
-    st.info("Sem dados de umidade para os filtros selecionados.")
-else:
-    _ord_loc = (_base_loc_um.groupby("cod_fazenda")["sc_ha"].mean()
-                .sort_values(ascending=False).index.tolist())
-    _cA, _cB = st.columns([2, 3])
-    with _cA:
-        _loc_sel = st.selectbox("Local", _ord_loc, key="sel_local_umid")
-    _g = _base_loc_um[_base_loc_um["cod_fazenda"] == _loc_sel]
-    _dfl = (_g.groupby("dePara", as_index=False)
-            .agg(umid=("umidade_pct", "mean"), prod=("sc_ha", "mean"),
-                 status=("status_material", "first")))
-    _dfl = _dfl[_dfl["prod"] > 0]
-
-    # contexto do ensaio: quanto tempo ficou no campo
-    _dtp = pd.to_datetime(_g.get("dataPlantioMilho"), errors="coerce").dropna()
-    _dtc = pd.to_datetime(_g.get("dataColheitaMilho"), errors="coerce").dropna()
-    _ctx = []
-    if len(_dtp):
-        _ctx.append(f"plantio {_dtp.iloc[0]:%d/%m/%Y}")
-    if len(_dtc):
-        _ctx.append(f"colheita {_dtc.iloc[0]:%d/%m/%Y}")
-    if len(_dtp) and len(_dtc):
-        _ctx.append(f"**{(_dtc.iloc[0] - _dtp.iloc[0]).days} dias em campo**")
-    with _cB:
-        st.markdown(
-            f"<div style='padding:22px 0 0 8px;font-size:14px;color:#374151;'>"
-            f"{' · '.join(_ctx) if _ctx else 'sem datas de plantio/colheita'}"
-            f"{' · ' if _ctx else ''}{len(_dfl)} híbridos · "
-            f"média {_dfl['prod'].mean():.1f} sc/ha · umidade média {_dfl['umid'].mean():.1f}%"
-            f"</div>", unsafe_allow_html=True)
-
-    if len(_dfl) < 3:
-        st.info("Menos de 3 híbridos com umidade válida neste local.")
-    else:
-        _rot = st.checkbox("Nomear todos os híbridos", value=False, key="rot_local_umid",
-                           help="Desmarcado, só os STINE aparecem nomeados — o resto fica no "
-                                "hover, para o gráfico não virar um bloco de texto.")
-        fig_lu = go_plt.Figure()
-        _xt = np.linspace(_dfl["umid"].min(), _dfl["umid"].max(), 50)
-        _z = np.polyfit(_dfl["umid"].values, _dfl["prod"].values, 1)
-        fig_lu.add_trace(go_plt.Scatter(
-            x=_xt, y=np.poly1d(_z)(_xt), mode="lines", name="Tendência",
-            line=dict(color="#AAAAAA", width=1.5, dash="dash"), hoverinfo="skip"))
-        for _stt, _cor in COR_STATUS_PLOT.items():
-            _ds = _dfl[_dfl["status"] == _stt]
-            if _ds.empty:
-                continue
-            _mostra = _rot or (_stt == "STINE")
-            fig_lu.add_trace(go_plt.Scatter(
-                x=_ds["umid"], y=_ds["prod"],
-                mode="markers+text" if _mostra else "markers", name=_stt,
-                text=_ds["dePara"] if _mostra else None, textposition="top center",
-                textfont=dict(size=12, color="#333333", weight="bold"),
-                marker=dict(color=_cor, size=13,
-                            line=dict(color=COR_BORDA.get(_stt, "#888"), width=1.5), opacity=0.9),
-                customdata=_ds["dePara"],
-                hovertemplate=("<b>%{customdata}</b><br>Umidade: %{x:.1f}%"
-                               "<br>%{y:.1f} sc/ha<extra></extra>")))
-        fig_lu.update_layout(
-            height=500, plot_bgcolor="#F5F5F5", paper_bgcolor="#FFFFFF",
-            font=dict(family="Helvetica Neue, sans-serif", size=13, color="#111111"),
-            xaxis=dict(title=dict(text="<b>Umidade de colheita no local (%)</b>",
-                                  font=dict(size=14, color="#111111")),
-                       tickfont=dict(size=12, color="#111111", weight="bold"),
-                       gridcolor="#FFFFFF", gridwidth=1.5, zeroline=False,
-                       showline=True, linecolor="#CCCCCC"),
-            yaxis=dict(title=dict(text="<b>Produtividade no local (sc/ha)</b>",
-                                  font=dict(size=14, color="#111111")),
-                       tickfont=dict(size=12, color="#111111", weight="bold"),
-                       gridcolor="#FFFFFF", gridwidth=1.5, zeroline=False,
-                       showline=True, linecolor="#CCCCCC"),
-            legend=dict(title=dict(text="<b>Status</b>", font=dict(size=13, color="#111111")),
-                        orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
-                        font=dict(size=13, color="#111111", weight="bold")),
-            margin=dict(t=60, b=60, l=70, r=40))
-        st.plotly_chart(fig_lu, use_container_width=True)
+    if _rel_um:
         st.caption(
-            f"ℹ️ Todos os pontos vieram do mesmo ensaio: mesma data de plantio, mesma data de "
-            f"colheita. A diferença de umidade entre eles é diferença de ciclo. "
-            f"Reta ajustada com {len(_dfl)} híbridos — inclinação "
-            f"{_z[0]:+.1f} sc/ha por ponto percentual de umidade.")
+            f"ℹ️ Eixo Y = produtividade **relativa {_nome_ref}** (100 = referência). "
+            f"Eixo X = umidade de colheita **absoluta**, como sempre. "
+            f"**Acima de 100 e à esquerda é o canto confortável**: rende mais que a referência e "
+            f"colhe mais seco. Tracejado cinza = tendência"
+            + ("; tracejado colorido = média do status (produtividade na **margem direita**, "
+               "umidade **abaixo do eixo**)" if _status_linhas else "")
+            + ("; linha sólida = média do híbrido selecionado, na cor do status dele "
+               "(produtividade na **margem direita**, umidade **abaixo do eixo**)."
+               if _hib_detalhe else ".")
+            + " Como cada parcela é comparada com o próprio ensaio, as posições **mudam** em "
+              "relação à escala absoluta: sai o efeito de o híbrido ter sido testado em locais "
+              "melhores ou piores. Por isso estes valores não batem com a coluna Prod. Relativa "
+              "da Descritiva, que usa referência única do conjunto — as perguntas são outras.")
+    else:
+        st.caption(
+            f"ℹ️ Cada ponto = média do híbrido no conjunto filtrado, em **{unid_um}** (produtividade e "
+            "umidade de colheita). "
+            "Linha tracejada = tendência linear entre umidade e produtividade. Pontos acima da linha "
+            "produzem mais que o esperado para a sua umidade de colheita. "
+            "⚠️ Como a rede é desbalanceada, parte da diferença entre pontos é **onde** cada híbrido "
+            "foi testado. Troque a escala para **Relativa** para descontar esse efeito: cada "
+            "parcela passa a ser comparada com o próprio ensaio antes de virar média.")
 
 st.divider()
+
+# ════════════════════════════════════════════════════════════════════════════════
+# SEÇÃO 3B — REMOVIDA (umidade × produtividade dentro do local)
+#
+# Cruzava umidade e produtividade dos híbridos de UM ensaio, com reta de tendência. Saiu porque
+# a reta não sustentava a leitura que induzia ("acima da linha produziu mais que o esperado
+# para o ciclo"):
+#   · a correlação era ENTRE genótipos, não dentro de um: 35 materiais com potenciais
+#     diferentes, então o que a reta capturava era "os mais tardios deste ensaio renderam
+#     mais", e não um efeito de ciclo sobre produtividade;
+#   · sem repetição, cada ponto é UMA parcela — na faixa de 18 a 19% de umidade a dispersão
+#     vertical chegava a 40 sc/ha, boa parte dela erro experimental.
+#
+# A pergunta "quem seca antes e ainda produz" continua respondida pela SEÇÃO 3C (Secagem
+# relativa), que regride com a rede inteira: dezenas de pontos por híbrido, coeficiente
+# estimável e efeito de local descontado.
+# ════════════════════════════════════════════════════════════════════════════════
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SEÇÃO 3C — SECAGEM RELATIVA (umidade por local)
