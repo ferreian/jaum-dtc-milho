@@ -1135,6 +1135,11 @@ else:
             x=[None], y=[None], mode="lines", name="referência = 100",
             line=dict(color="#9AA5B1", width=1.5, dash="dot"), hoverinfo="skip"))
 
+    # rótulos da margem direita (status e híbridos): recolhidos numa lista e posicionados de uma
+    # vez, mais abaixo — duas médias podem cair a meio ponto uma da outra, e foi o que aconteceu
+    # com EXP 99,1 e STINE 98,6 escrevendo um por cima do outro
+    _rot_dir = []
+
     # ── médias por status: compara GRUPOS, não pontos ──────────────────────────
     # A horizontal é a média de produtividade do status; a vertical, a de umidade. O cruzamento
     # das duas é o centro de massa daquele grupo — dá para ver de relance se o portfólio STINE
@@ -1165,11 +1170,11 @@ else:
                 text=f"<b>{_r['status']} {_r['_x']:.1f}%</b>",
                 font=dict(size=12, color=_c))
         for _, _r in _med_st.iterrows():
-            _c = COR_BORDA.get(_r["status"], COR_STATUS_PLOT.get(_r["status"], "#888888"))
-            fig_um.add_annotation(
-                x=1.005, xref="paper", xanchor="left", y=_r["_y"], yref="y",
-                showarrow=False, text=f"<b>{_r['status']} {_r['_y']:.1f}%</b>",
-                font=dict(size=12, color=_c))
+            # cor recalculada aqui: `_c` do laço acima é o do ÚLTIMO status daquele laço, e
+            # todos os rótulos sairiam da mesma cor
+            _rot_dir.append(dict(
+                y=float(_r["_y"]), txt=f"<b>{_r['status']} {_r['_y']:.1f}%</b>",
+                cor=COR_BORDA.get(_r["status"], COR_STATUS_PLOT.get(_r["status"], "#888888"))))
 
     # ── híbridos detalhados: mesmas linhas dos status, SÓLIDAS ─────────────────
     # Mesma leitura das tracejadas de status, um nível abaixo: a horizontal na produtividade
@@ -1177,8 +1182,6 @@ else:
     # Os rótulos ficam do lado OPOSTO aos de status — produtividade à esquerda, umidade em cima —
     # para as duas famílias não disputarem a mesma margem.
     if _hib_detalhe:
-        _y_status = (df_um[df_um["status"].isin(_status_linhas)].groupby("status")["media_sc"]
-                     .mean().tolist() if _status_linhas else [])
         _med_hib_det = (df_um[df_um["dePara"].isin(_hib_detalhe)]
                         .set_index("dePara").reindex(_hib_detalhe).dropna(how="all"))
         for _i, (_h, _r) in enumerate(_med_hib_det.iterrows()):
@@ -1191,15 +1194,10 @@ else:
             # inteiro — dá para conferir quais materiais ficam acima ou abaixo dela
             fig_um.add_hline(y=_r["media_sc"], line=dict(color=_cor_h, width=3), layer="below")
             fig_um.add_vline(x=_r["umidade"], line=dict(color=_cor_h, width=2), layer="below")
-            # mesma coluna e mesmo formato dos rótulos de status, colados no eixo. Só quando a
-            # média do híbrido cai quase em cima da do grupo dele o rótulo sobe alguns pixels,
-            # para os dois não se escreverem por cima.
-            _colide = any(abs(_r["media_sc"] - _ly) < _banda for _ly in _y_status)
-            fig_um.add_annotation(
-                x=1.005, xref="paper", xanchor="left", y=_r["media_sc"], yref="y",
-                yshift=14 if _colide else 0,
-                showarrow=False, text=f"<b>{_h} {_r['media_sc']:.1f}%</b>",
-                font=dict(size=12, color=_cor_h))
+            # mesma coluna e mesmo formato dos de status; o espaçamento entre TODOS eles é
+            # resolvido de uma vez, mais abaixo
+            _rot_dir.append(dict(y=float(_r["media_sc"]),
+                                 txt=f"<b>{_h} {_r['media_sc']:.1f}%</b>", cor=_cor_h))
             fig_um.add_annotation(
                 x=_r["umidade"], xref="x", y=0, yref="paper", yanchor="top",
                 # abaixo dos rótulos de status quando eles estão ligados, senão colidem: as duas
@@ -1208,6 +1206,19 @@ else:
                 showarrow=False,
                 text=f"<b>{_h} {_r['umidade']:.1f}%</b>",
                 font=dict(size=12, color=_cor_h))
+
+    # AFASTAMENTO MÍNIMO: ordena por altura e empurra para cima quem ficaria colado no anterior.
+    # A LINHA continua no valor real; só o rótulo se desloca — e como o valor vai escrito nele,
+    # a leitura não se perde.
+    if _rot_dir:
+        _rot_dir.sort(key=lambda d: d["y"])
+        _sep, _ult = _banda * 1.15, None
+        for _d in _rot_dir:
+            _yrot = _d["y"] if _ult is None else max(_d["y"], _ult + _sep)
+            _ult = _yrot
+            fig_um.add_annotation(
+                x=1.005, xref="paper", xanchor="left", y=_yrot, yref="y",
+                showarrow=False, text=_d["txt"], font=dict(size=12, color=_d["cor"]))
 
     st.plotly_chart(fig_um, use_container_width=True)
     if _rel_um:
