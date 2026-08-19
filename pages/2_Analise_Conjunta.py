@@ -1347,10 +1347,11 @@ else:
                 _PAL_SEC = ["#9B59B6", "#E91E63", "#00BCD4", "#795548", "#FF5722", "#673AB7"]
                 _cor_de = {h: _PAL_SEC[i % len(_PAL_SEC)] for i, h in enumerate(sel_sec)}
 
-                _c1, _c2 = st.columns([3, 2])
-
+                # Um gráfico EMBAIXO do outro, não lado a lado: com a legenda na lateral
+                # (padrão do Índice Ambiental) cada um precisa da largura inteira — em duas
+                # colunas, a legenda comeria metade da área de plotagem.
                 # ── gráfico 1: retas de secagem ────────────────────────────────
-                with _c1:
+                with st.container():
                     fig_sec = go_plt.Figure()
                     _xs = np.linspace(_hl["idx"].min(), _hl["idx"].max(), 50)
 
@@ -1373,46 +1374,50 @@ else:
                         _g = _hl[_hl["dePara"] == _h]
                         _r = df_sec[df_sec["dePara"] == _h].iloc[0]
                         _cor = _cor_de[_h]
+                        # como no Índice Ambiental: quem entra na legenda é a RETA, não a nuvem
+                        # de pontos — assim o traço colorido da legenda corresponde ao que o
+                        # olho procura no gráfico
                         fig_sec.add_trace(go_plt.Scatter(
                             x=_g["idx"], y=_g["umid"], mode="markers", name=_h,
-                            legendgroup=_h,
-                            marker=dict(color=_cor, size=8, opacity=0.75,
+                            legendgroup=_h, showlegend=False,
+                            marker=dict(color=_cor, size=7, opacity=0.6,
                                         line=dict(color="#FFFFFF", width=0.8)),
                             hovertemplate=(f"<b>{_h}</b><br>local: %{{x:.1f}}%<br>"
                                            "híbrido: %{y:.1f}%<extra></extra>")))
                         fig_sec.add_trace(go_plt.Scatter(
                             x=_xs, y=_r["a"] + _r["b"] * _xs, mode="lines", name=_h,
-                            legendgroup=_h, showlegend=False,
-                            line=dict(color=_cor, width=2.5),
+                            legendgroup=_h, showlegend=True,
+                            line=dict(color=_cor, width=2),
                             hovertemplate=(f"<b>{_h}</b><br>b = {_r['b']:.2f} · "
                                            f"R² = {_r['r2']:.2f}<extra></extra>")))
 
+                    # mesmo padrão visual do Índice Ambiental (fundo branco, grade #E5E5E5,
+                    # legenda vertical à direita): as três leituras de adaptabilidade da página
+                    # passam a ser lidas do mesmo jeito
                     fig_sec.update_layout(
-                        height=520, plot_bgcolor="#F5F5F5", paper_bgcolor="#FFFFFF",
-                        font=dict(family="Helvetica Neue, sans-serif", size=13, color="#111111"),
-                        xaxis=dict(title=dict(text="<b>Umidade média do local (%)</b>",
-                                              font=dict(size=14, color="#111111")),
-                                   tickfont=dict(size=12, color="#111111", weight="bold"),
-                                   gridcolor="#FFFFFF", gridwidth=1.5, zeroline=False,
-                                   showline=True, linecolor="#CCCCCC"),
-                        yaxis=dict(title=dict(text="<b>Umidade do híbrido (%)</b>",
-                                              font=dict(size=14, color="#111111")),
-                                   tickfont=dict(size=12, color="#111111", weight="bold"),
-                                   gridcolor="#FFFFFF", gridwidth=1.5, zeroline=False,
-                                   showline=True, linecolor="#CCCCCC"),
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
-                                    font=dict(size=12, color="#111111")),
-                        margin=dict(t=70, b=60, l=70, r=20))
+                        height=520, margin=dict(t=40, b=60, l=60, r=160),
+                        plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
+                        font=dict(family="Helvetica Neue, sans-serif", size=14, color="#111111"),
+                        legend=dict(orientation="v", x=1.01, y=1, xanchor="left",
+                                    font=dict(size=13, color="#111111"), itemsizing="constant"),
+                        xaxis=dict(title=dict(text="Umidade média do local (%)",
+                                              font=dict(size=15, color="#111111", weight="bold")),
+                                   tickfont=dict(size=13, color="#111111"), gridcolor="#E5E5E5"),
+                        yaxis=dict(title=dict(text="Umidade do híbrido (%)",
+                                              font=dict(size=15, color="#111111", weight="bold")),
+                                   tickfont=dict(size=13, color="#111111"), gridcolor="#E5E5E5"))
                     st.plotly_chart(fig_sec, use_container_width=True)
                     st.caption("ℹ️ Cada ponto é um híbrido em um local. Cinza = demais híbridos do "
                                "recorte, como contexto. Tracejado = diagonal b = 1.")
+
+                st.write("")      # respiro entre os dois gráficos empilhados
 
                 # ── gráfico 2: onde cada híbrido cai ──────────────────────────
                 # Trocado o dot plot de duas colunas por um plano: com 35 híbridos
                 # aquilo virava uma lista de pontos sem eixo legível. Aqui b e
                 # produtividade são os dois eixos, os quadrantes têm nome em
                 # português e só os destacados são rotulados.
-                with _c2:
+                with st.container():
                     _med_prod = float(df_sec["prod"].median())
                     _dst = df_sec[df_sec["dePara"].isin(sel_sec)]
                     _ctx = df_sec[~df_sec["dePara"].isin(sel_sec)]
@@ -1423,22 +1428,28 @@ else:
 
                     if not _ctx.empty:
                         fig_co.add_trace(go_plt.Scatter(
-                            x=_ctx["b"], y=_ctx["prod"], mode="markers", showlegend=False,
+                            x=_ctx["b"], y=_ctx["prod"], mode="markers",
+                            name="demais híbridos", legendgroup="ctx", showlegend=True,
                             marker=dict(color="#D5D8DC", size=9,
                                         line=dict(color="#FFFFFF", width=1)),
                             customdata=np.stack([_ctx["dePara"], _ctx["r2"], _ctx["n"]], axis=-1),
                             hovertemplate=("<b>%{customdata[0]}</b><br>b = %{x:.2f} · "
                                            "R² = %{customdata[1]:.2f}<br>%{y:.1f} sc/ha · "
                                            "%{customdata[2]} locais<extra></extra>")))
-                    if not _dst.empty:
+                    # UM TRACE POR HÍBRIDO (não um só com vetor de cores): é o que permite a
+                    # mesma legenda vertical do gráfico de cima. `legendgroup` repete o do gráfico
+                    # 1, então a ordem e as cores dos dois batem.
+                    for _h in sel_sec:
+                        _p = _dst[_dst["dePara"] == _h]
+                        if _p.empty:
+                            continue
                         fig_co.add_trace(go_plt.Scatter(
-                            x=_dst["b"], y=_dst["prod"], mode="markers+text", showlegend=False,
-                            text=_dst["dePara"], textposition="top center",
-                            textfont=dict(size=12, color="#111111", weight="bold"),
-                            marker=dict(color=[_cor_de[h] for h in _dst["dePara"]], size=15,
+                            x=_p["b"], y=_p["prod"], mode="markers", name=_h,
+                            legendgroup=_h, showlegend=True,
+                            marker=dict(color=_cor_de[_h], size=15,
                                         line=dict(color="#FFFFFF", width=1.5)),
-                            customdata=np.stack([_dst["r2"], _dst["n"], _dst["precoc"]], axis=-1),
-                            hovertemplate=("<b>%{text}</b><br>b = %{x:.2f} · "
+                            customdata=np.stack([_p["r2"], _p["n"], _p["precoc"]], axis=-1),
+                            hovertemplate=(f"<b>{_h}</b><br>b = %{{x:.2f}} · "
                                            "R² = %{customdata[0]:.2f}<br>%{y:.1f} sc/ha · "
                                            "%{customdata[1]} locais<br>"
                                            "precocidade %{customdata[2]:+.1f} pp<extra></extra>")))
@@ -1460,28 +1471,27 @@ else:
                     fig_co.update_layout(
                         title=dict(text="<b>Quem seca junto com o ambiente, e quem produz</b>",
                                    font=dict(size=15, color="#111111"), x=0, xanchor="left"),
-                        height=520, plot_bgcolor="#F5F5F5", paper_bgcolor="#FFFFFF",
-                        font=dict(family="Helvetica Neue, sans-serif", size=13, color="#111111"),
+                        height=520, margin=dict(t=80, b=70, l=60, r=160),
+                        plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
+                        font=dict(family="Helvetica Neue, sans-serif", size=14, color="#111111"),
+                        legend=dict(orientation="v", x=1.01, y=1, xanchor="left",
+                                    font=dict(size=13, color="#111111"), itemsizing="constant"),
                         xaxis=dict(
                             title=dict(text="← umidade mais estável &nbsp;&nbsp;|&nbsp;&nbsp; "
                                             "amplifica o ambiente →",
-                                       font=dict(size=13, color="#111111")),
-                            tickfont=dict(size=12, color="#111111", weight="bold"),
-                            gridcolor="#FFFFFF", gridwidth=1.5, zeroline=False,
-                            showline=True, linecolor="#CCCCCC",
+                                       font=dict(size=15, color="#111111", weight="bold")),
+                            tickfont=dict(size=13, color="#111111"), gridcolor="#E5E5E5",
                             range=[_xmin - _pad_x * 2, _xmax + _pad_x * 2]),
                         yaxis=dict(
-                            title=dict(text="<b>Produtividade média (sc/ha)</b>",
-                                       font=dict(size=13, color="#111111")),
-                            tickfont=dict(size=12, color="#111111", weight="bold"),
-                            gridcolor="#FFFFFF", gridwidth=1.5, zeroline=False,
-                            showline=True, linecolor="#CCCCCC",
-                            range=[_ymin - _pad_y * 2.2, _ymax + _pad_y * 2]),
-                        margin=dict(t=80, b=70, l=70, r=30))
+                            title=dict(text="Produtividade média (sc/ha)",
+                                       font=dict(size=15, color="#111111", weight="bold")),
+                            tickfont=dict(size=13, color="#111111"), gridcolor="#E5E5E5",
+                            range=[_ymin - _pad_y * 2.2, _ymax + _pad_y * 2]))
                     st.plotly_chart(fig_co, use_container_width=True)
                     st.caption(
-                        f"ℹ️ Cada ponto é um híbrido. Em cinza, os que não estão em destaque — "
-                        f"o nome aparece ao passar o mouse. A vertical marca **b = 1**, o híbrido "
+                        f"ℹ️ Cada ponto é um híbrido, identificado pela cor na legenda ao lado. "
+                        f"Em cinza, os que não estão em destaque — o nome aparece ao passar o "
+                        f"mouse. A vertical marca **b = 1**, o híbrido "
                         f"que varia igual ao ambiente; a horizontal marca a **mediana de "
                         f"produtividade do recorte ({_med_prod:.1f} sc/ha)**. O canto superior "
                         f"esquerdo é a posição mais confortável: produz acima da mediana e a "
