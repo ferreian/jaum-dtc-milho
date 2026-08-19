@@ -1140,6 +1140,10 @@ else:
     # com EXP 99,1 e STINE 98,6 escrevendo um por cima do outro
     _rot_dir = []
 
+    def _fmt_y(_v):
+        """Valor do eixo Y no formato da escala ativa — índice com % ou sc/ha (kg/ha)."""
+        return f"{_v:.1f}%" if _rel_um else f"{_v:,.{_dum}f} {unid_um}".replace(",", ".")
+
     # ── médias por status: compara GRUPOS, não pontos ──────────────────────────
     # A horizontal é a média de produtividade do status; a vertical, a de umidade. O cruzamento
     # das duas é o centro de massa daquele grupo — dá para ver de relance se o portfólio STINE
@@ -1173,7 +1177,7 @@ else:
             # cor recalculada aqui: `_c` do laço acima é o do ÚLTIMO status daquele laço, e
             # todos os rótulos sairiam da mesma cor
             _rot_dir.append(dict(
-                y=float(_r["_y"]), txt=f"<b>{_r['status']} {_r['_y']:.1f}%</b>",
+                y=float(_r["_y"]), txt=f"<b>{_r['status']} {_fmt_y(_r['_y'])}</b>",
                 cor=COR_BORDA.get(_r["status"], COR_STATUS_PLOT.get(_r["status"], "#888888"))))
 
     # ── híbridos detalhados: mesmas linhas dos status, SÓLIDAS ─────────────────
@@ -1197,7 +1201,7 @@ else:
             # mesma coluna e mesmo formato dos de status; o espaçamento entre TODOS eles é
             # resolvido de uma vez, mais abaixo
             _rot_dir.append(dict(y=float(_r["media_sc"]),
-                                 txt=f"<b>{_h} {_r['media_sc']:.1f}%</b>", cor=_cor_h))
+                                 txt=f"<b>{_h} {_fmt_y(_r['media_sc'])}</b>", cor=_cor_h))
             fig_um.add_annotation(
                 x=_r["umidade"], xref="x", y=0, yref="paper", yanchor="top",
                 # abaixo dos rótulos de status quando eles estão ligados, senão colidem: as duas
