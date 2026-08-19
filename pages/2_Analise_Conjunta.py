@@ -1395,17 +1395,17 @@ else:
                     # legenda vertical à direita): as três leituras de adaptabilidade da página
                     # passam a ser lidas do mesmo jeito
                     fig_sec.update_layout(
-                        height=520, margin=dict(t=40, b=60, l=60, r=160),
+                        height=520, margin=dict(t=40, b=70, l=75, r=160),
                         plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
                         font=dict(family="Helvetica Neue, sans-serif", size=14, color="#111111"),
                         legend=dict(orientation="v", x=1.01, y=1, xanchor="left",
                                     font=dict(size=13, color="#111111"), itemsizing="constant"),
                         xaxis=dict(title=dict(text="Umidade média do local (%)",
-                                              font=dict(size=15, color="#111111", weight="bold")),
-                                   tickfont=dict(size=13, color="#111111"), gridcolor="#E5E5E5"),
+                                              font=dict(size=16, color="#000000", weight="bold")),
+                                   tickfont=dict(size=14, color="#000000", weight="bold"), gridcolor="#E5E5E5"),
                         yaxis=dict(title=dict(text="Umidade do híbrido (%)",
-                                              font=dict(size=15, color="#111111", weight="bold")),
-                                   tickfont=dict(size=13, color="#111111"), gridcolor="#E5E5E5"))
+                                              font=dict(size=16, color="#000000", weight="bold")),
+                                   tickfont=dict(size=14, color="#000000", weight="bold"), gridcolor="#E5E5E5"))
                     st.plotly_chart(fig_sec, use_container_width=True)
                     st.caption("ℹ️ Cada ponto é um híbrido em um local. Cinza = demais híbridos do "
                                "recorte, como contexto. Tracejado = diagonal b = 1.")
@@ -1471,7 +1471,7 @@ else:
                     fig_co.update_layout(
                         title=dict(text="<b>Quem seca junto com o ambiente, e quem produz</b>",
                                    font=dict(size=15, color="#111111"), x=0, xanchor="left"),
-                        height=520, margin=dict(t=80, b=70, l=60, r=160),
+                        height=520, margin=dict(t=80, b=80, l=75, r=160),
                         plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
                         font=dict(family="Helvetica Neue, sans-serif", size=14, color="#111111"),
                         legend=dict(orientation="v", x=1.01, y=1, xanchor="left",
@@ -1479,13 +1479,13 @@ else:
                         xaxis=dict(
                             title=dict(text="← umidade mais estável &nbsp;&nbsp;|&nbsp;&nbsp; "
                                             "amplifica o ambiente →",
-                                       font=dict(size=15, color="#111111", weight="bold")),
-                            tickfont=dict(size=13, color="#111111"), gridcolor="#E5E5E5",
+                                       font=dict(size=16, color="#000000", weight="bold")),
+                            tickfont=dict(size=14, color="#000000", weight="bold"), gridcolor="#E5E5E5",
                             range=[_xmin - _pad_x * 2, _xmax + _pad_x * 2]),
                         yaxis=dict(
                             title=dict(text="Produtividade média (sc/ha)",
-                                       font=dict(size=15, color="#111111", weight="bold")),
-                            tickfont=dict(size=13, color="#111111"), gridcolor="#E5E5E5",
+                                       font=dict(size=16, color="#000000", weight="bold")),
+                            tickfont=dict(size=14, color="#000000", weight="bold"), gridcolor="#E5E5E5",
                             range=[_ymin - _pad_y * 2.2, _ymax + _pad_y * 2]))
                     st.plotly_chart(fig_co, use_container_width=True)
                     st.caption(
