@@ -1220,6 +1220,11 @@ else:
                 x=1.005, xref="paper", xanchor="left", y=_yrot, yref="y",
                 showarrow=False, text=_d["txt"], font=dict(size=12, color=_d["cor"]))
 
+        # margem direita pelo MAIOR rótulo: "DKB360PRO3 98.6%" precisa de mais espaço que
+        # "EXP 99.1%", e com a margem fixa o nome comprido saía cortado na borda
+        _n_car = max(len(_d["txt"].replace("<b>", "").replace("</b>", "")) for _d in _rot_dir)
+        fig_um.update_layout(margin_r=max(110, int(_n_car * 7.2) + 24))
+
     st.plotly_chart(fig_um, use_container_width=True)
     if _rel_um:
         st.caption(
