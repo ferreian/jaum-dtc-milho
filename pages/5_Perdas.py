@@ -178,26 +178,42 @@ PERDAS = {
 PERDA_TOTAL = "pct_perda_total"
 
 # ── Régua: quanto de PRODUÇÃO se perde por ponto percentual de cada evento ─────
-# O simulador convertia 1 pp de perda física em 1% de produção perdida. Isso superestima por dois
-# motivos: (a) percentual de PLANTAS não é percentual de PRODUÇÃO — planta acamada ainda enche
-# espiga, e planta dominada já produzia pouco antes de qualquer coisa acontecer; (b) a produção
-# medida JÁ inclui o que essas plantas produziram, então tratá-las como zero conta a perda duas
-# vezes. Some a compensação das vizinhas e o fator 1,00 vira teto irreal.
+# O simulador convertia 1 pp de perda física em 1% de produção perdida. Isso superestima: (a)
+# percentual de PLANTAS não é percentual de PRODUÇÃO — planta acamada ainda enche espiga, e planta
+# dominada já produzia pouco antes de qualquer coisa acontecer; (b) a produção medida JÁ inclui o
+# que essas plantas produziram, então tratá-las como zero conta a perda duas vezes.
 #
-# Os valores abaixo saíram de regressão na própria rede (2.496 parcelas de 24/25 e 25/26):
-# produtividade relativa ao ensaio contra os quatro componentes, descontando local E híbrido.
-# Coeficientes: acamamento -0,13 · quebramento -0,29 · dominadas -0,18 · colmo podre +0,03 (n.s.).
+# A régua sai de PESAGEM DE ESPIGAS, não de estatística:
 #
-# DOIS CUIDADOS, que estão no texto da seção: o R² é 0,02 — os componentes explicam pouco da
-# variação de produtividade —, e erro de medição no percentual de perda puxa coeficiente para
-# baixo, então estes fatores são conservadores. São ponto de partida ajustável, não constante
-# física: a régua fica visível na tela para o time técnico calibrar.
-FATORES_PERDA = {
-    "Acamamento":  0.15,
-    "Quebramento": 0.30,
-    "Dominadas":   0.20,
-    "Colmo Podre": 0.05,   # sem efeito detectável na rede; mantido baixo, não zero
-}
+#     fator = 1 − (peso médio da espiga afetada ÷ peso médio da espiga normal)
+#
+# Espiga de acamada a 205 g contra 240 g da normal → fator 15%. É medida direta, defensável em
+# qualquer reunião, e o time coleta junto com a avaliação de perdas.
+#
+# Para quebramento entra um segundo termo: a espiga pode estar cheia e mesmo assim ir a zero, se
+# cair fora do alcance da plataforma. Daí o campo "% que a colheitadeira recupera":
+#
+#     fator = 1 − (peso afetada ÷ peso normal) × proporção recuperada
+#
+# HISTÓRICO: uma versão anterior estimava os fatores por regressão na rede (produtividade relativa
+# contra os quatro componentes, controlando local e híbrido). Dava 0,13 / 0,29 / 0,18 / ~0, mas com
+# R² de 0,02 — associação fraca, sujeita a confundimento, e impossível de explicar para quem vai
+# usar o número. A pesagem substitui isso com vantagem.
+#
+# SEM PESAGEM o painel assume 100% em tudo, que é o TETO: cada planta afetada teria produzido o
+# normal. É a hipótese mais pessimista sobre a perda e a mais otimista sobre o ganho de corrigi-la
+# — e vem avisada na tela, para ninguém apresentar o teto como estimativa.
+FATOR_SEM_MEDIDA = 1.00
+# Teto dos campos de pesagem. Espiga de milho fica em 150–350 g, mas o campo aceita bem mais de
+# propósito: como o fator é uma RAZÃO, o usuário pode digitar o peso do lote inteiro (10 espigas,
+# por exemplo) em vez da média, desde que use o mesmo número de espigas nos dois lados da conta.
+PESO_ESPIGA_MAX = 3000.0
+
+# Protocolo de contagem em campo — o MESMO das avaliações do DTC em 2025, para o número que o
+# usuário traz da lavoura ser comparável ao da rede (ver N_SUBAMOSTRAS_2025 e METROS_CONTAGEM no
+# pipeline). Se o protocolo do app mudar, mude aqui junto.
+N_SUB_PROTOCOLO = 4
+METROS_PROTOCOLO = 10
 
 # ── Fenômenos da av4 (mesma régua e mesma subamostra das perdas; só 2025) ──
 # NÃO somam com pct_perda_total — denominador diferente.
@@ -2266,10 +2282,15 @@ vizinhas compensam parte do que se perde. Cada componente entra multiplicado por
 perda efetiva = Σ (componente × fator do componente)
 ```
 
-Os fatores partem de regressão na própria rede — 2.496 parcelas das duas safras, produtividade
-relativa ao ensaio contra os quatro componentes, descontando local e híbrido. Deram: acamamento
-**0,15**, quebramento **0,30**, dominadas **0,20**, colmo podre **0,05**. Estão editáveis no painel
-"Régua de conversão", logo acima dos sliders.
+Os fatores saem de **pesagem de espigas**, no painel "Régua de conversão":
+
+```
+fator = 1 − (peso da espiga afetada ÷ peso da espiga normal)
+```
+
+Espiga de acamada a 205 g contra 240 g da normal dá fator de 15%. Para quebramento entra também
+a proporção que a plataforma consegue levantar. **Sem pesagem informada, o painel assume 100% em
+tudo** — o teto do prejuízo.
 
 **3. Descobrimos a produção potencial** — o que teria sido colhido sem nenhuma perda:
 
@@ -2284,22 +2305,21 @@ mesma régua:
 produção simulada = potencial × (1 − nova perda efetiva ÷ 100)
 ```
 
-> **Por que não 1 para 1.** Até esta versão o simulador assumia fator 1,00 para os quatro
-componentes. Na média da rede isso implica 11,6% de produção perdida por perdas de colheita; a
-régua calibrada implica 1,5%. A diferença é grande o bastante para mudar conclusão de reunião, e o
-número antigo era o mais otimista possível quanto ao ganho de corrigir perdas.
+> **Por que não 1 para 1.** Sem régua, o simulador assume que cada planta afetada teria produzido
+como uma normal. Na média da rede isso implica 11,6% de produção perdida por perdas de colheita. Com
+pesagem, o número costuma cair bastante — e a diferença é grande o bastante para mudar conclusão de
+reunião. Se for citar um ganho, cite junto a régua que o produziu.
 
 ---
 
 #### Cuidados com a análise
 
-- **A régua é estatística, não física.** O R² da regressão é 0,02: os quatro componentes explicam
-  pouca coisa da variação de produtividade entre parcelas. Os coeficientes são consistentes
-  (t entre 2,6 e 4,6) mas pequenos. Some o erro de medição do percentual de perda, que puxa
-  coeficiente para baixo, e o mais honesto é ler os fatores como **piso**, não como verdade.
-- **Colmo podre não apareceu.** Na rede, o coeficiente dele foi positivo e não significativo —
-  parcela com mais colmo podre não rendeu menos. Pode ser confundimento (colmo podre aparece mais
-  em lavoura que ficou mais tempo no campo, que também produziu mais). Fator inicial 0,05.
+- **A régua por pesagem é um teto por construção.** As espigas normais de uma parcela com muitas
+  dominadas já estão maiores do que estariam num estande uniforme, porque herdaram luz e água das
+  vizinhas fracas. O déficit medido contra elas exagera um pouco o efeito líquido na produtividade
+  da parcela.
+- **Pese pareado.** Espigas normais e afetadas do mesmo plot, no mesmo dia, ao menos 10 de cada
+  tipo por local. Comparar entre locais mistura ambiente com perda.
 - **É uma estimativa de teto, não uma promessa.** Ela isola só o efeito das perdas físicas,
   mantendo todo o resto igual. A produtividade real depende de muito mais — genética, clima, solo,
   manejo, população. Reduzir o acamamento não garante o ganho todo; ele mostra o **máximo** que se
@@ -2335,166 +2355,386 @@ else:
     hib_sim = st.selectbox("Selecione o híbrido", options=_hib_sim, key="perdas_sim_hib")
     g_sim = ta_filtrado[ta_filtrado["dePara"] == hib_sim]
 
-    prod_atual = pd.to_numeric(g_sim["kg_ha"], errors="coerce").mean()
-    _comp_medio = {}
+    _prod_rede = pd.to_numeric(g_sim["kg_ha"], errors="coerce").mean()
+    _comp_rede = {}
     for nome, col in PERDAS.items():
         if col in g_sim.columns:
-            _comp_medio[nome] = round(float(pd.to_numeric(g_sim[col], errors="coerce").fillna(0).mean()), 1)
+            _comp_rede[nome] = round(float(pd.to_numeric(g_sim[col], errors="coerce").fillna(0).mean()), 1)
         else:
-            _comp_medio[nome] = 0.0
+            _comp_rede[nome] = 0.0
+
+    # ORIGEM DOS DADOS: histórico da rede ou levantamento próprio do usuário. O segundo modo
+    # transforma a seção em ferramenta de campo — o consultor conta plantas na lavoura do cliente
+    # e usa a mesma régua, em vez de partir da média de uma rede que não é a dele.
+    _origem = st.radio(
+        "De onde vêm as perdas", ["Média da rede (histórico do híbrido)",
+                                  "Meu levantamento em campo"],
+        horizontal=True, key="origem_sim",
+        help="No segundo modo você digita a contagem feita na lavoura e o painel converte em "
+             "percentual, com o mesmo método das avaliações do DTC.")
+    _campo = (_origem == "Meu levantamento em campo")
+
+    if not _campo:
+        prod_atual, _comp_medio = _prod_rede, dict(_comp_rede)
+    else:
+        with st.popover("📋 Protocolo de coleta — como contar na lavoura",
+                        use_container_width=False):
+            st.markdown(f"""
+#### O método é o mesmo das avaliações do DTC
+
+Assim o número que sai daqui é comparável ao da rede. Nada de estimativa a olho: **é contagem**.
+
+**1. Escolha {N_SUB_PROTOCOLO} pontos representativos** da lavoura ou do talhão. Ande em zigue-zague,
+longe de bordadura, carreador e manchas óbvias — a ideia é o que representa a área, não o pior nem
+o melhor pedaço.
+
+**2. Em cada ponto, marque {METROS_PROTOCOLO} metros lineares** de uma linha (fita ou trena).
+Se o espaçamento for 0,50 m, esses {METROS_PROTOCOLO} metros equivalem a 5 m² de lavoura.
+
+**3. Conte, nesses {METROS_PROTOCOLO} metros:**
+
+| O que contar | Como reconhecer |
+|---|---|
+| **Plantas totais** | todas as plantas do trecho, boas e ruins, inclusive as afetadas |
+| **Acamadas** | tombadas a partir da base, colmo inclinado; a espiga ainda está na planta |
+| **Quebradas** | colmo partido **abaixo da espiga** — a espiga não chega na plataforma |
+| **Dominadas** | plantas menores, atrasadas, espiga pequena ou ausente, sombreadas pelas vizinhas |
+| **Colmo podre** | colmo que cede ao apertar entre os dedos, ou com apodrecimento visível na base |
+
+**4. Repita nos {N_SUB_PROTOCOLO} pontos** e digite tudo na tabela. O painel soma e calcula
+`afetadas ÷ totais × 100` para cada categoria — a mesma conta do pipeline.
+
+---
+
+#### Cuidados
+
+- **Conte na mesma passada.** Voltar em outro dia muda o estande (planta que cai depois entra na
+  conta e não estava lá antes).
+- **Uma planta pode entrar em duas colunas** — uma quebrada também pode ter colmo podre. Se isso
+  for comum, a soma superestima a perda física; some com critério e mantenha o mesmo critério
+  entre avaliações.
+- **Antes ou depois da colheita?** O protocolo do DTC conta **antes**, com a lavoura em pé. Contar
+  depois mede outra coisa (perda de plataforma), que este simulador não modela.
+- **Produtividade de base.** Se você não tem a produtividade daquela lavoura, use a da rede (já
+  vem preenchida). Se tem, digite — o resultado passa a ser sobre o talhão do cliente.
+""")
+
+        _k_cont = f"cont_df_{hib_sim}"
+        _map_cont = {"Acamamento": "Acamadas", "Quebramento": "Quebradas",
+                     "Dominadas": "Dominadas", "Colmo Podre": "Colmo podre"}
+        _cols_cont = ["Plantas totais"] + list(_map_cont.values())
+
+        @st.dialog("📋 Contagem em campo", width="large")
+        def _form_contagem():
+            st.markdown(
+                f"Em cada um dos **{N_SUB_PROTOCOLO} pontos**, marque **{METROS_PROTOCOLO} metros "
+                f"lineares** e conte as plantas do trecho. *Plantas totais* inclui as afetadas. "
+                f"Ponto que você não avaliou: deixe em zero — a conta usa só o que foi contado.")
+            _prev = st.session_state.get(_k_cont)
+
+            def _ant(_i, _c):
+                if _prev is None:
+                    return 0
+                try:
+                    _v = pd.to_numeric(_prev[_c], errors="coerce").fillna(0).iloc[_i]
+                    return int(_v)
+                except (KeyError, IndexError, ValueError):
+                    return 0
+
+            _linhas = []
+            for _i in range(N_SUB_PROTOCOLO):
+                _cs = st.columns([0.7, 1, 1, 1, 1, 1])
+                _cs[0].markdown(f"<div style='padding-top:{34 if _i == 0 else 8}px;"
+                                f"font-weight:600;'>Ponto {_i + 1}</div>",
+                                unsafe_allow_html=True)
+                _lin = {}
+                for _j, _c in enumerate(_cols_cont):
+                    _lin[_c] = _cs[_j + 1].number_input(
+                        _c, min_value=0, step=1, value=_ant(_i, _c),
+                        key=f"cnt_{_i}_{_c}_{hib_sim}",
+                        label_visibility="visible" if _i == 0 else "collapsed")
+                _linhas.append(_lin)
+
+            _ed = pd.DataFrame([{"Ponto": f"Ponto {_i + 1}", **_l}
+                                for _i, _l in enumerate(_linhas)])
+            _tp = float(_ed["Plantas totais"].sum())
+            st.divider()
+            if _tp > 0:
+                st.success(
+                    f"**{int(_tp)} plantas** contadas · "
+                    + " · ".join(f"{_n} {_ed[_c].sum() / _tp * 100:.1f}%"
+                                 for _n, _c in _map_cont.items()))
+            else:
+                st.caption("Preencha ao menos as plantas totais de um ponto.")
+
+            _d1, _d2 = st.columns(2)
+            if _d1.button("Salvar contagem", type="primary", use_container_width=True,
+                          disabled=_tp <= 0):
+                st.session_state[_k_cont] = _ed
+                st.rerun()
+            if _d2.button("Limpar", use_container_width=True):
+                st.session_state.pop(_k_cont, None)
+                for _i in range(N_SUB_PROTOCOLO):
+                    for _c in _cols_cont:
+                        st.session_state.pop(f"cnt_{_i}_{_c}_{hib_sim}", None)
+                st.rerun()
+
+        _cf0, _cf1 = st.columns([1, 2])
+        prod_atual = _cf0.number_input(
+            "Produtividade da lavoura (kg/ha)", min_value=0.0, step=100.0,
+            value=float(round(_prod_rede)) if pd.notna(_prod_rede) else 0.0,
+            key=f"prod_campo_{hib_sim}",
+            help="Vem preenchida com a média da rede para este híbrido. Substitua pela "
+                 "produtividade real do talhão, se tiver.")
+        with _cf1:
+            st.write("")
+            if st.button("📋 Registrar contagem", key=f"abrir_cont_{hib_sim}",
+                         use_container_width=True):
+                _form_contagem()
+
+        _cont = st.session_state.get(_k_cont)
+        _tot_plantas = (float(pd.to_numeric(_cont["Plantas totais"], errors="coerce").fillna(0).sum())
+                        if _cont is not None else 0.0)
+
+        if _tot_plantas <= 0:
+            st.info(f"Sem contagem registrada — seguem os valores da rede para **{hib_sim}**. "
+                    f"Clique em *Registrar contagem* e informe o que você contou na lavoura.")
+            _comp_medio = dict(_comp_rede)
+        else:
+            _comp_medio = {
+                _n: round(float(pd.to_numeric(_cont[_c], errors="coerce").fillna(0).sum())
+                          / _tot_plantas * 100, 1)
+                for _n, _c in _map_cont.items()}
+            _n_pontos = int((pd.to_numeric(_cont["Plantas totais"], errors="coerce").fillna(0) > 0).sum())
+            st.dataframe(
+                pd.DataFrame([{
+                    "Perda": _n,
+                    "Plantas contadas": int(pd.to_numeric(_cont[_c], errors="coerce").fillna(0).sum()),
+                    "% do estande": f"{_comp_medio[_n]:.1f}%",
+                    "Na rede": f"{_comp_rede[_n]:.1f}%",
+                } for _n, _c in _map_cont.items()]),
+                hide_index=True, use_container_width=True)
+            st.caption(
+                f"{int(_tot_plantas)} plantas contadas em {_n_pontos} de {N_SUB_PROTOCOLO} pontos · "
+                f"perda física **{sum(_comp_medio.values()):.1f}%** contra "
+                f"**{sum(_comp_rede.values()):.1f}%** da rede para este híbrido.")
+
     perda_total_atual = round(sum(_comp_medio.values()), 1)
 
     if pd.isna(prod_atual) or prod_atual <= 0:
         st.warning(f"**{hib_sim}** não tem produtividade registrada nos filtros ativos — "
                    "não dá para simular sem uma produção de base.")
     else:
-        # RÉGUA: cada componente entra no cálculo multiplicado pelo seu fator (ver FATORES_PERDA)
+        # RÉGUA — fatores vindos de PESAGEM DE ESPIGAS (ver FATOR_SEM_MEDIDA no topo)
         with st.expander("⚖️ Régua de conversão — quanto de produção cada perda custa", False):
             st.markdown(
-                "**Estes controles não são a perda — a perda está nos sliders de baixo.** "
-                "Aqui você define o quanto cada tipo de perda custa em produção. "
-                "Exemplo: quebramento em **30%** quer dizer que, a cada 1% de plantas quebradas, "
-                "**0,3%** da produção se perde. O resto ou foi colhido assim mesmo, ou as plantas "
-                "vizinhas compensaram.")
-            with st.popover("ℹ️ Como usar a régua", use_container_width=False):
+                "**Esta régua não é a perda — a perda está nos sliders de baixo.** "
+                "Aqui entra **quanto pesa a espiga** de cada tipo de planta afetada, em gramas, "
+                "comparada à de uma planta normal do mesmo plot. O botão abre o formulário; a "
+                "tabela ao lado mostra a régua em uso.")
+            with st.popover("ℹ️ Como medir e como usar", use_container_width=False):
                 st.markdown("""
-#### Primeiro: a régua não é a perda
-
-São dois números diferentes, e é fácil confundir.
-
-| | O que é | De onde vem |
-|---|---|---|
-| **A perda** (sliders de baixo) | quantas **plantas** acamaram, quebraram, ficaram dominadas | medido no campo pelo avaliador |
-| **A régua** (aqui em cima) | quanto de **produção** cada uma dessas plantas custou | estimado, ajustável |
-
-O avaliador conta plantas. A balança pesa grãos. A régua é a ponte entre as duas coisas.
-
----
-
-#### O que cada valor da régua significa
-
-De cada 1% de plantas afetadas, quanto por cento da produção some:
-
-- **100%** — a planta afetada não colheu nada e teria colhido o normal. Era o que o simulador
-  assumia antes de existir esta régua.
-- **30%** — a cada 1% de plantas quebradas, 0,3% da produção se perde. O resto ou foi colhido
-  assim mesmo, ou foi compensado pelas vizinhas, que ficaram com mais luz e espaço.
-- **0%** — o evento não custa produção. Faz sentido para o que já produzia pouco antes de
-  acontecer, ou para o que a colhedora recupera.
-
----
-
-#### A conta, com números
-
-Um híbrido que produziu **8.500 kg/ha** na média dos locais filtrados, com estas perdas medidas:
-
-| Perda medida | Plantas | × régua | = produção perdida |
-|---|---|---|---|
-| Acamamento | 1,1% | 15% | 0,17% |
-| Quebramento | 1,2% | 30% | 0,36% |
-| Dominadas | 5,8% | 20% | 1,16% |
-| Colmo podre | 3,9% | 5% | 0,20% |
-| **Total** | **12,0% das plantas** | | **1,9% da produção** |
-
-**Passo 1 — o potencial.** Os 8.500 kg/ha já são o que sobrou depois das perdas. Se 1,9% da
-produção se perdeu, então o que existia antes era:
+#### A conta
 
 ```
-8.500 ÷ (1 − 0,019) = 8.665 kg/ha
+fator = 1 − (peso da espiga afetada ÷ peso da espiga normal)
 ```
 
-**Passo 2 — o seu cenário.** Você move o slider de quebramento de 1,2% para 0,6%, metade. A
-produção perdida cai de 1,9% para 1,72%, e a simulada fica:
+Espiga de planta acamada pesando **205 g** contra **240 g** da normal: a acamada entregou 85% do
+que uma planta normal entregaria, então o fator é **15%**. A cada 1% de plantas acamadas, 0,15% da
+produção se perde.
+
+Para **quebramento** entra um segundo termo. A espiga pode estar cheia e mesmo assim ir a zero, se
+o colmo partiu abaixo dela e a espiga caiu fora do alcance da plataforma:
 
 ```
-8.665 × (1 − 0,0172) = 8.516 kg/ha
+fator = 1 − (peso afetada ÷ peso normal) × proporção recuperada
 ```
 
-**Resultado: +16 kg/ha**, ou 0,3 saca. Com a régua toda em 100%, o mesmo corte daria **+58 kg/ha**,
-1 saca — três vezes e meia mais, porque assumiria que cada planta quebrada levou embora uma
-produção inteira.
+Com espiga a 215 g, normal a 240 g, e só 40% das quebradas chegando na plataforma:
+1 − 0,90 × 0,40 = **64%**.
 
 ---
 
-#### Por que nenhum deles é 100%
+#### Protocolo de pesagem
 
-**Percentual de plantas não é percentual de produção.** Planta acamada continua enchendo espiga; o
-que se perde é o que a plataforma não levanta. Planta dominada já produzia pouco antes de ser
-dominada — contá-la como produção inteira perdida é atribuir a ela um potencial que ela nunca teve.
+**1. Pareie dentro do mesmo plot.** As espigas normais e as afetadas têm que sair da mesma
+parcela, no mesmo dia. Comparar espiga acamada de um local com espiga normal de outro mistura
+ambiente com efeito de perda.
 
-**A produção medida já inclui essas plantas.** O que foi para a balança tem dentro o pouco que a
-acamada e a dominada entregaram. Tratá-las como zero conta a perda duas vezes.
+**2. Colha ao menos 10 espigas de cada tipo por local**, em uns 5 locais. Menos que isso e a
+variação natural de espiga engole a diferença que você quer medir.
 
-**As vizinhas compensam.** Menos planta competindo é mais luz, água e espaço para quem ficou. Em
-milho a compensação é limitada, porque a espiga é uma só, mas existe.
+**3. Debulhe e pese, ou pese a espiga inteira** — desde que use o mesmo critério para as normais e
+para as afetadas. O que importa é a razão entre os dois pesos, não o valor absoluto.
 
----
-
-#### De onde vieram os valores iniciais
-
-Regressão na sua própria rede: 2.496 parcelas das safras 24/25 e 25/26, produtividade **relativa
-ao ensaio** contra os quatro componentes, descontando o efeito de local e de híbrido. Os
-coeficientes deram acamamento 0,13, quebramento 0,29, dominadas 0,18 e colmo podre praticamente
-zero — arredondados para 15%, 30%, 20% e 5%.
+**4. Para quebramento, anote também** quantas das espigas quebradas estavam em posição que a
+plataforma levantaria. Essa proporção é o segundo termo da conta.
 
 ---
 
-#### Como usar na prática
+#### O que esperar de cada categoria
 
-1. **Deixe como está** se for só rodar o cenário. Os valores são os que a rede mostrou.
-2. **Suba um fator** se o time técnico souber que naquele contexto a perda é mais severa — por
-   exemplo, acamamento em lavoura que ficou muito tempo esperando colheita.
-3. **Ponha os quatro em 100%** para ver o **teto absoluto**: o cenário mais otimista possível
-   quanto ao ganho de eliminar perdas. Útil para responder "no melhor caso, quanto seria?".
-4. **Registre qual régua usou** ao citar um número em reunião. O mesmo cenário com fatores
-   diferentes dá respostas diferentes, e a diferença não é pequena: na média da rede, 100% em
-   tudo implica 11,6% de produção perdida; a régua calibrada implica 1,5%.
+- **Dominadas** deve dar o maior fator — espiga pequena, às vezes ausente.
+- **Acamamento** costuma ser baixo: a planta tombou mas encheu.
+- **Quebramento** depende mais da recuperação na colheita do que do peso.
+- **Colmo podre** varia com o momento: apodrecimento tardio quase não mexe no peso.
 
-> A régua vale para o cálculo inteiro — potencial, simulado e os três cartões. Mexer nela recalcula
-tudo na hora.
+---
+
+#### Um cuidado que vale entender
+
+As espigas "normais" de uma parcela com muitas dominadas **já estão maiores** do que estariam num
+estande uniforme, porque herdaram luz e água das vizinhas fracas. Comparar a dominada com elas
+exagera um pouco o déficit. Por isso o fator medido por pesagem é mais um **teto** do que um valor
+exato — o efeito líquido na produtividade da parcela é um pouco menor, porque parte do que a
+dominada deixou de produzir foi para a vizinha.
+
+---
+
+#### Sem pesagem
+
+Deixe o peso da espiga normal em zero e o painel volta a assumir **100% em tudo**: cada planta
+afetada teria produzido o normal. É o teto absoluto, e aparece avisado na tela.
 """)
-            _cf = st.columns(len(FATORES_PERDA))
-            _fator = {}
-            for _i, (_n, _f0) in enumerate(FATORES_PERDA.items()):
-                # em % (0 a 100) na tela, fração no cálculo: "15%" é mais direto de ler e de
-                # discutir com o time do que "0,15"
-                _fator[_n] = _cf[_i].slider(
-                    f"{_n}", 0, 100, int(round(_f0 * 100)), 5, key=f"fator_{_n}",
-                    format="%d%%",
-                    help=f"De cada 1% de plantas com {_n.lower()}, quanto por cento da produção "
-                         f"se perde. 100% = a planta não produziu nada e produziria o normal. "
-                         f"Estimado na rede: {_f0 * 100:.0f}%.") / 100
-            st.caption(
-                f"Régua em uso: "
-                + " · ".join(f"{_n} **{_f * 100:.0f}%**" for _n, _f in _fator.items())
-                + ". R² da regressão que os estimou: 0,02 — os componentes explicam pouca coisa "
-                  "da variação de produtividade entre parcelas, e erro de medição puxa os "
-                  "coeficientes para baixo, então são fatores conservadores.")
 
-        _pef = lambda _d: sum(_d.get(_n, 0.0) * _fator[_n] for _n in FATORES_PERDA)
+            # FORMULÁRIO EM MODAL: a pesagem é entrada de dados, não leitura. Em campos soltos
+            # dentro do expander ela competia com a tabela de contagem e ninguém sabia onde
+            # digitava o quê. Aqui o botão abre um formulário, e a TELA fica só com o resultado.
+            _k_pes = f"pesagem_{hib_sim}"
+            _pes = st.session_state.get(_k_pes, {})
+
+            def _limita(_v):
+                try:
+                    return float(min(max(float(_v), 0.0), PESO_ESPIGA_MAX))
+                except (TypeError, ValueError):
+                    return 0.0
+
+            @st.dialog("⚖️ Pesagem de espigas", width="large")
+            def _form_pesagem():
+                st.markdown(
+                    "Pese ao menos **10 espigas de cada tipo**, do **mesmo plot** e no mesmo dia. "
+                    "Os valores são **gramas por espiga** — a média das que você pesou. "
+                    "Debulhada ou inteira, tanto faz, desde que o critério seja o mesmo para "
+                    "normais e afetadas.\n\n"
+                    "Se preferir, pese o **lote inteiro** em vez da média por espiga — o fator é "
+                    "uma razão entre os dois pesos, então funciona igual, desde que o número de "
+                    "espigas seja o mesmo dos dois lados.")
+                # peso é digitado (número exato lido na balança); slider só na porcentagem,
+                # que é estimativa e se ajusta melhor arrastando
+                _pn_i = st.number_input(
+                    "Espiga de planta NORMAL — g", min_value=0.0, max_value=PESO_ESPIGA_MAX,
+                    step=5.0, value=_limita(_pes.get("normal", 0.0)),
+                    key=f"dlgn_{hib_sim}", help="Denominador da conta. Sem ele não há régua.")
+                st.divider()
+                _novo = {"normal": _pn_i, "pesos": {}, "recup": {}}
+                for _n in PERDAS:
+                    _cg, _cr, _cf = st.columns([1, 1.8, 1.1])
+                    _novo["pesos"][_n] = _cg.number_input(
+                        f"{_n} — g", min_value=0.0, max_value=PESO_ESPIGA_MAX, step=5.0,
+                        value=_limita(_pes.get("pesos", {}).get(_n, 0.0)),
+                        key=f"dlgp_{_n}_{hib_sim}")
+                    _novo["recup"][_n] = _cr.slider(
+                        f"{_n} — quanto a plataforma recupera", 0, 100,
+                        int(_pes.get("recup", {}).get(_n, 100)), 5, format="%d%%",
+                        key=f"dlg_rec_{_n}_{hib_sim}")
+                    # RETORNO IMEDIATO: o fator sai da razão entre os dois pesos, então mostrá-lo
+                    # aqui evita que o usuário só descubra o resultado depois de salvar — e
+                    # denuncia peso digitado na unidade errada (fator negativo ou 0%).
+                    _pa_i = _novo["pesos"][_n]
+                    _rc_i = _novo["recup"][_n] / 100
+                    if _pn_i > 0 and _pa_i > 0:
+                        _f_i = min(1.0, max(0.0, 1 - (_pa_i / _pn_i) * _rc_i))
+                        _cor_i = "#B00020" if _f_i >= 0.5 else ("#B36B00" if _f_i >= 0.2
+                                                                else "#1E7A34")
+                        _cf.markdown(
+                            f"<div style='padding-top:34px;font-size:13px;color:#555;'>perde"
+                            f"<br><span style='font-size:22px;font-weight:700;color:{_cor_i};'>"
+                            f"{_f_i * 100:.0f}%</span>"
+                            f"<br><span style='font-size:12px;'>{_pa_i:.0f} ÷ {_pn_i:.0f}"
+                            + (f" × {_novo['recup'][_n]}%" if _rc_i < 1 else "")
+                            + "</span></div>", unsafe_allow_html=True)
+                    else:
+                        _cf.markdown(
+                            "<div style='padding-top:34px;font-size:13px;color:#999;'>perde"
+                            "<br><span style='font-size:22px;font-weight:700;'>100%</span>"
+                            "<br><span style='font-size:12px;'>sem peso</span></div>",
+                            unsafe_allow_html=True)
+
+                if _pn_i <= 0:
+                    st.warning("Informe primeiro o **peso da espiga normal** — é o denominador "
+                               "da conta. Sem ele todas as categorias ficam em 100%.")
+                st.caption(
+                    "Categoria que você não pesou: deixe em zero — ela entra como 100% "
+                    "(perda total), que é o teto. Espiga afetada mais pesada que a normal "
+                    "resulta em 0%: nesse caso a perda não custou produção naquela amostra.")
+                _b1, _b2 = st.columns(2)
+                if _b1.button("Salvar pesagem", type="primary", use_container_width=True):
+                    st.session_state[_k_pes] = _novo
+                    st.rerun()
+                if _b2.button("Limpar", use_container_width=True):
+                    st.session_state.pop(_k_pes, None)
+                    for _k in ([f"dlgn_{hib_sim}"]
+                               + [f"dlgp_{_n}_{hib_sim}" for _n in PERDAS]
+                               + [f"dlg_rec_{_n}_{hib_sim}" for _n in PERDAS]):
+                        st.session_state.pop(_k, None)
+                    st.rerun()
+
+            _bt1, _bt2 = st.columns([1, 3])
+            if _bt1.button("⚖️ Registrar pesagem", key=f"abrir_pes_{hib_sim}",
+                           use_container_width=True):
+                _form_pesagem()
+
+            _pn = float(_pes.get("normal", 0.0))
+            _pesos = _pes.get("pesos", {})
+            _recup = _pes.get("recup", {})
+            _fator = {}
+            for _n in PERDAS:
+                _pa, _r = float(_pesos.get(_n, 0.0)), int(_recup.get(_n, 100)) / 100
+                _fator[_n] = (float(min(1.0, max(0.0, 1 - (_pa / _pn) * _r)))
+                              if _pn > 0 and _pa > 0 else FATOR_SEM_MEDIDA)
+
+            # a régua fica sempre visível como TABELA, medida ou não
+            _tab_regua = pd.DataFrame([{
+                "Perda": _n,
+                "Espiga normal (g)": f"{_pn:.0f}" if _pn > 0 else "—",
+                "Espiga afetada (g)": (f"{float(_pesos.get(_n, 0)):.0f}"
+                                       if _pn > 0 and float(_pesos.get(_n, 0)) > 0 else "—"),
+                "Recuperada": f"{int(_recup.get(_n, 100))}%" if _pn > 0 else "—",
+                "Fator": f"{_fator[_n] * 100:.0f}%",
+                "Origem": ("pesagem" if _pn > 0 and float(_pesos.get(_n, 0)) > 0
+                           else "sem medida (teto)"),
+            } for _n in PERDAS])
+            _bt2.dataframe(_tab_regua, hide_index=True, use_container_width=True)
+
+            if _pn <= 0:
+                st.warning(
+                    "**Sem pesagem, o painel assume 100% em todas as categorias** — cada planta "
+                    "afetada teria produzido como uma normal. É o teto do prejuízo e o cenário "
+                    "mais otimista quanto ao ganho de corrigir. Clique em *Registrar pesagem* "
+                    "para a régua sair de medida em vez de suposição.")
+
+        _pef = lambda _d: sum(_d.get(_n, 0.0) * _fator[_n] for _n in PERDAS)
         perda_efetiva_atual = _pef(_comp_medio)
         potencial = (prod_atual / (1 - perda_efetiva_atual / 100)
                      if perda_efetiva_atual < 100 else prod_atual)
 
-        st.markdown(f"**{hib_sim}** — média da rede sob os filtros atuais: "
-                    f"produção **{prod_atual:.0f} kg/ha** ({prod_atual/60:.1f} sc/ha), "
+        st.markdown(f"**{hib_sim}** — "
+                    + ("seu levantamento em campo: " if _campo
+                       else "média da rede sob os filtros atuais: ")
+                    + f"produção **{prod_atual:.0f} kg/ha** ({prod_atual/60:.1f} sc/ha), "
                     f"perda física **{perda_total_atual:.1f}%** que a régua converte em "
                     f"**{perda_efetiva_atual:.1f}%** de produção. "
                     f"Produção potencial sem perdas: **{potencial:.0f} kg/ha**.")
 
-        _c_tit, _c_reset = st.columns([4, 1])
-        _c_tit.markdown("##### Ajuste as perdas e veja o efeito")
+        st.markdown("##### Ajuste as perdas e veja o efeito")
         # A CHAVE PRECISA DO HÍBRIDO. Com `key="sim_pct_dominadas"` fixo, o valor ficava no
         # session_state e NÃO voltava ao medido ao trocar de híbrido: os sliders continuavam com
         # o cenário do material anterior, e o simulador mostrava ganho "sem mexer em nada".
-        # Incluindo o híbrido (e o recorte de filtros) na chave, cada seleção começa no seu
-        # próprio valor medido.
-        _ctx_key = f"{hib_sim}|{len(g_sim)}"
-        if _c_reset.button("↺ Valores medidos", key=f"reset_sim_{_ctx_key}",
-                           help="Volta os quatro sliders para a média real do híbrido na rede."):
-            for _c in PERDAS.values():
-                st.session_state.pop(f"sim_{_c}_{_ctx_key}", None)
-            st.rerun()
+        # Incluindo híbrido, origem e a própria perda medida na chave, o cenário se desfaz sozinho
+        # sempre que a base muda — por isso não há botão de "voltar ao medido" aqui: trocar de
+        # híbrido, de origem ou registrar nova contagem já recoloca os sliders no valor real.
+        _ctx_key = f"{hib_sim}|{len(g_sim)}|{'campo' if _campo else 'rede'}|{perda_total_atual}"
 
         _cols_sim = st.columns(len(PERDAS))
         _novo_comp = {}
