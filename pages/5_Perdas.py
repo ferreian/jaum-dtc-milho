@@ -21,7 +21,7 @@ Cuidados de leitura (valem para a página inteira):
     subamostra não avaliada fica de fora. O percentual é a taxa do plot.
 
 Seções (construídas incrementalmente):
-  1. Auditoria — tabela analítica de sanidade por ensaio
+  1. Auditoria — tabela analítica de perdas e fenômenos por ensaio
 """
 import numpy as np
 import pandas as pd
@@ -176,6 +176,28 @@ PERDAS = {
     "Colmo Podre": "pct_colmo_podre",
 }
 PERDA_TOTAL = "pct_perda_total"
+
+# ── Régua: quanto de PRODUÇÃO se perde por ponto percentual de cada evento ─────
+# O simulador convertia 1 pp de perda física em 1% de produção perdida. Isso superestima por dois
+# motivos: (a) percentual de PLANTAS não é percentual de PRODUÇÃO — planta acamada ainda enche
+# espiga, e planta dominada já produzia pouco antes de qualquer coisa acontecer; (b) a produção
+# medida JÁ inclui o que essas plantas produziram, então tratá-las como zero conta a perda duas
+# vezes. Some a compensação das vizinhas e o fator 1,00 vira teto irreal.
+#
+# Os valores abaixo saíram de regressão na própria rede (2.496 parcelas de 24/25 e 25/26):
+# produtividade relativa ao ensaio contra os quatro componentes, descontando local E híbrido.
+# Coeficientes: acamamento -0,13 · quebramento -0,29 · dominadas -0,18 · colmo podre +0,03 (n.s.).
+#
+# DOIS CUIDADOS, que estão no texto da seção: o R² é 0,02 — os componentes explicam pouco da
+# variação de produtividade —, e erro de medição no percentual de perda puxa coeficiente para
+# baixo, então estes fatores são conservadores. São ponto de partida ajustável, não constante
+# física: a régua fica visível na tela para o time técnico calibrar.
+FATORES_PERDA = {
+    "Acamamento":  0.15,
+    "Quebramento": 0.30,
+    "Dominadas":   0.20,
+    "Colmo Podre": 0.05,   # sem efeito detectável na rede; mantido baixo, não zero
+}
 
 # ── Fenômenos da av4 (mesma régua e mesma subamostra das perdas; só 2025) ──
 # NÃO somam com pct_perda_total — denominador diferente.
@@ -338,9 +360,10 @@ def exportar_excel(df, nome_arquivo="tabela.xlsx", label="⬇️ Exportar Excel"
 
 # ── Header ────────────────────────────────────────────────────────────────────
 page_header(
-    "Sanidade",
-    "Doenças na lavoura (av2) e o que apareceu na colheita (av4) — perdas e fenômenos. "
-    "Comece conferindo os dados por ensaio na Auditoria; as análises agregadas vêm em seguida.",
+    "Perdas",
+    "O que se perdeu entre a lavoura e a colheita: acamamento, quebramento, dominadas e colmo "
+    "podre, mais os fenômenos da av4. Comece pela Auditoria, por ensaio; as análises agregadas "
+    "vêm em seguida, e o simulador fecha estimando quanto de produção essas perdas custaram.",
     imagem="Researchers-pana.png",
 )
 
@@ -380,7 +403,7 @@ if ta_raw.empty:
     st.error("Nenhum dado disponível. Verifique a página de Diagnóstico.")
     st.stop()
 
-# Só interessam os plots com ALGUMA medida de sanidade (doença, perda ou fenômeno).
+# Só interessam os plots com ALGUMA medida de perda ou fenômeno.
 # Um plot só com produtividade não tem o que auditar aqui.
 COLS_PERDAS_FEN = (list(PERDAS.values()) + [PERDA_TOTAL]
                    + [f["pct"] for f in FENOMENOS.values()])
@@ -2235,30 +2258,48 @@ filtros (região, safra, local) muda os valores iniciais, porque muda o conjunto
 **1. A produção que você vê já é a que sobrou.** As plantas que acamaram, quebraram ou foram
 dominadas não entraram na produtividade colhida. Então a produção da rede já embute as perdas.
 
-**2. Descobrimos a produção potencial** — o que teria sido colhido sem nenhuma perda:
+**2. A perda física passa por uma régua.** Um ponto percentual de acamamento não é um ponto
+percentual de produção: planta acamada ainda enche espiga, planta dominada já produzia pouco, e as
+vizinhas compensam parte do que se perde. Cada componente entra multiplicado por um fator:
 
 ```
-potencial = produção média ÷ (1 − perda total ÷ 100)
+perda efetiva = Σ (componente × fator do componente)
 ```
 
-**3. Você ajusta as perdas nos sliders.** A perda total é a soma dos quatro componentes (acamamento
-+ quebramento + dominadas + colmo podre) — confirmado nos dados, a soma bate exato com a perda total
-medida.
+Os fatores partem de regressão na própria rede — 2.496 parcelas das duas safras, produtividade
+relativa ao ensaio contra os quatro componentes, descontando local e híbrido. Deram: acamamento
+**0,15**, quebramento **0,30**, dominadas **0,20**, colmo podre **0,05**. Estão editáveis no painel
+"Régua de conversão", logo acima dos sliders.
 
-**4. A produção simulada recalcula sobre o potencial:**
+**3. Descobrimos a produção potencial** — o que teria sido colhido sem nenhuma perda:
 
 ```
-produção simulada = potencial × (1 − nova perda total ÷ 100)
+potencial = produção média ÷ (1 − perda efetiva ÷ 100)
 ```
 
-Reduziu a perda, recupera parte do potencial; aumentou, perde mais. A conta é a mesma que a
-agronomia diz: perda física é planta que não produziu, então recuperá-la recupera produção na mesma
-proporção.
+**4. Você ajusta as perdas nos sliders** e a simulada recalcula sobre o potencial, passando pela
+mesma régua:
+
+```
+produção simulada = potencial × (1 − nova perda efetiva ÷ 100)
+```
+
+> **Por que não 1 para 1.** Até esta versão o simulador assumia fator 1,00 para os quatro
+componentes. Na média da rede isso implica 11,6% de produção perdida por perdas de colheita; a
+régua calibrada implica 1,5%. A diferença é grande o bastante para mudar conclusão de reunião, e o
+número antigo era o mais otimista possível quanto ao ganho de corrigir perdas.
 
 ---
 
 #### Cuidados com a análise
 
+- **A régua é estatística, não física.** O R² da regressão é 0,02: os quatro componentes explicam
+  pouca coisa da variação de produtividade entre parcelas. Os coeficientes são consistentes
+  (t entre 2,6 e 4,6) mas pequenos. Some o erro de medição do percentual de perda, que puxa
+  coeficiente para baixo, e o mais honesto é ler os fatores como **piso**, não como verdade.
+- **Colmo podre não apareceu.** Na rede, o coeficiente dele foi positivo e não significativo —
+  parcela com mais colmo podre não rendeu menos. Pode ser confundimento (colmo podre aparece mais
+  em lavoura que ficou mais tempo no campo, que também produziu mais). Fator inicial 0,05.
 - **É uma estimativa de teto, não uma promessa.** Ela isola só o efeito das perdas físicas,
   mantendo todo o resto igual. A produtividade real depende de muito mais — genética, clima, solo,
   manejo, população. Reduzir o acamamento não garante o ganho todo; ele mostra o **máximo** que se
@@ -2307,11 +2348,138 @@ else:
         st.warning(f"**{hib_sim}** não tem produtividade registrada nos filtros ativos — "
                    "não dá para simular sem uma produção de base.")
     else:
-        potencial = prod_atual / (1 - perda_total_atual / 100) if perda_total_atual < 100 else prod_atual
+        # RÉGUA: cada componente entra no cálculo multiplicado pelo seu fator (ver FATORES_PERDA)
+        with st.expander("⚖️ Régua de conversão — quanto de produção cada perda custa", False):
+            st.markdown(
+                "**Estes controles não são a perda — a perda está nos sliders de baixo.** "
+                "Aqui você define o quanto cada tipo de perda custa em produção. "
+                "Exemplo: quebramento em **30%** quer dizer que, a cada 1% de plantas quebradas, "
+                "**0,3%** da produção se perde. O resto ou foi colhido assim mesmo, ou as plantas "
+                "vizinhas compensaram.")
+            with st.popover("ℹ️ Como usar a régua", use_container_width=False):
+                st.markdown("""
+#### Primeiro: a régua não é a perda
+
+São dois números diferentes, e é fácil confundir.
+
+| | O que é | De onde vem |
+|---|---|---|
+| **A perda** (sliders de baixo) | quantas **plantas** acamaram, quebraram, ficaram dominadas | medido no campo pelo avaliador |
+| **A régua** (aqui em cima) | quanto de **produção** cada uma dessas plantas custou | estimado, ajustável |
+
+O avaliador conta plantas. A balança pesa grãos. A régua é a ponte entre as duas coisas.
+
+---
+
+#### O que cada valor da régua significa
+
+De cada 1% de plantas afetadas, quanto por cento da produção some:
+
+- **100%** — a planta afetada não colheu nada e teria colhido o normal. Era o que o simulador
+  assumia antes de existir esta régua.
+- **30%** — a cada 1% de plantas quebradas, 0,3% da produção se perde. O resto ou foi colhido
+  assim mesmo, ou foi compensado pelas vizinhas, que ficaram com mais luz e espaço.
+- **0%** — o evento não custa produção. Faz sentido para o que já produzia pouco antes de
+  acontecer, ou para o que a colhedora recupera.
+
+---
+
+#### A conta, com números
+
+Um híbrido que produziu **8.500 kg/ha** na média dos locais filtrados, com estas perdas medidas:
+
+| Perda medida | Plantas | × régua | = produção perdida |
+|---|---|---|---|
+| Acamamento | 1,1% | 15% | 0,17% |
+| Quebramento | 1,2% | 30% | 0,36% |
+| Dominadas | 5,8% | 20% | 1,16% |
+| Colmo podre | 3,9% | 5% | 0,19% |
+| **Total** | **12,0% das plantas** | | **1,9% da produção** |
+
+**Passo 1 — o potencial.** Os 8.500 kg/ha já são o que sobrou depois das perdas. Se 1,9% da
+produção se perdeu, então o que existia antes era:
+
+```
+8.500 ÷ (1 − 0,019) = 8.665 kg/ha
+```
+
+**Passo 2 — o seu cenário.** Você move o slider de quebramento de 1,2% para 0,6%, metade. A
+produção perdida cai de 1,9% para 1,72%, e a simulada fica:
+
+```
+8.665 × (1 − 0,0172) = 8.516 kg/ha
+```
+
+**Resultado: +16 kg/ha**, ou 0,3 saca. Com a régua toda em 100%, o mesmo corte daria **+58 kg/ha**,
+1 saca — três vezes e meia mais, porque assumiria que cada planta quebrada levou embora uma
+produção inteira.
+
+---
+
+#### Por que nenhum deles é 100%
+
+**Percentual de plantas não é percentual de produção.** Planta acamada continua enchendo espiga; o
+que se perde é o que a plataforma não levanta. Planta dominada já produzia pouco antes de ser
+dominada — contá-la como produção inteira perdida é atribuir a ela um potencial que ela nunca teve.
+
+**A produção medida já inclui essas plantas.** O que foi para a balança tem dentro o pouco que a
+acamada e a dominada entregaram. Tratá-las como zero conta a perda duas vezes.
+
+**As vizinhas compensam.** Menos planta competindo é mais luz, água e espaço para quem ficou. Em
+milho a compensação é limitada, porque a espiga é uma só, mas existe.
+
+---
+
+#### De onde vieram os valores iniciais
+
+Regressão na sua própria rede: 2.496 parcelas das safras 24/25 e 25/26, produtividade **relativa
+ao ensaio** contra os quatro componentes, descontando o efeito de local e de híbrido. Os
+coeficientes deram acamamento 0,13, quebramento 0,29, dominadas 0,18 e colmo podre praticamente
+zero — arredondados para 15%, 30%, 20% e 5%.
+
+---
+
+#### Como usar na prática
+
+1. **Deixe como está** se for só rodar o cenário. Os valores são os que a rede mostrou.
+2. **Suba um fator** se o time técnico souber que naquele contexto a perda é mais severa — por
+   exemplo, acamamento em lavoura que ficou muito tempo esperando colheita.
+3. **Ponha os quatro em 100%** para ver o **teto absoluto**: o cenário mais otimista possível
+   quanto ao ganho de eliminar perdas. Útil para responder "no melhor caso, quanto seria?".
+4. **Registre qual régua usou** ao citar um número em reunião. O mesmo cenário com fatores
+   diferentes dá respostas diferentes, e a diferença não é pequena: na média da rede, 100% em
+   tudo implica 11,6% de produção perdida; a régua calibrada implica 1,5%.
+
+> A régua vale para o cálculo inteiro — potencial, simulado e os três cartões. Mexer nela recalcula
+tudo na hora.
+""")
+            _cf = st.columns(len(FATORES_PERDA))
+            _fator = {}
+            for _i, (_n, _f0) in enumerate(FATORES_PERDA.items()):
+                # em % (0 a 100) na tela, fração no cálculo: "15%" é mais direto de ler e de
+                # discutir com o time do que "0,15"
+                _fator[_n] = _cf[_i].slider(
+                    f"{_n}", 0, 100, int(round(_f0 * 100)), 5, key=f"fator_{_n}",
+                    format="%d%%",
+                    help=f"De cada 1% de plantas com {_n.lower()}, quanto por cento da produção "
+                         f"se perde. 100% = a planta não produziu nada e produziria o normal. "
+                         f"Estimado na rede: {_f0 * 100:.0f}%.") / 100
+            st.caption(
+                f"Régua em uso: "
+                + " · ".join(f"{_n} **{_f * 100:.0f}%**" for _n, _f in _fator.items())
+                + ". R² da regressão que os estimou: 0,02 — os componentes explicam pouca coisa "
+                  "da variação de produtividade entre parcelas, e erro de medição puxa os "
+                  "coeficientes para baixo, então são fatores conservadores.")
+
+        _pef = lambda _d: sum(_d.get(_n, 0.0) * _fator[_n] for _n in FATORES_PERDA)
+        perda_efetiva_atual = _pef(_comp_medio)
+        potencial = (prod_atual / (1 - perda_efetiva_atual / 100)
+                     if perda_efetiva_atual < 100 else prod_atual)
 
         st.markdown(f"**{hib_sim}** — média da rede sob os filtros atuais: "
                     f"produção **{prod_atual:.0f} kg/ha** ({prod_atual/60:.1f} sc/ha), "
-                    f"perda total **{perda_total_atual:.1f}%**. "
+                    f"perda física **{perda_total_atual:.1f}%** que a régua converte em "
+                    f"**{perda_efetiva_atual:.1f}%** de produção. "
                     f"Produção potencial sem perdas: **{potencial:.0f} kg/ha**.")
 
         st.markdown("##### Ajuste as perdas e veja o efeito")
@@ -2326,15 +2494,18 @@ else:
                 help=f"Percentual de perda por {nome.lower()}. Média na rede: {atual:.1f}%.")
 
         perda_total_nova = round(sum(_novo_comp.values()), 1)
-        prod_simulada = potencial * (1 - perda_total_nova / 100)
+        perda_efetiva_nova = _pef(_novo_comp)
+        prod_simulada = potencial * (1 - perda_efetiva_nova / 100)
         delta_kg = prod_simulada - prod_atual
         delta_sc = delta_kg / 60
         delta_pct = (delta_kg / prod_atual * 100) if prod_atual else 0
 
         st.markdown("##### Resultado")
         _r1, _r2, _r3 = st.columns(3)
-        _r1.metric("Perda total simulada", f"{perda_total_nova:.1f}%",
-                   f"{perda_total_nova - perda_total_atual:+.1f} pp", delta_color="inverse")
+        _r1.metric("Perda física simulada", f"{perda_total_nova:.1f}%",
+                   f"{perda_total_nova - perda_total_atual:+.1f} pp", delta_color="inverse",
+                   help=f"Em produção, a régua converte para {perda_efetiva_nova:.1f}% "
+                        f"(hoje: {perda_efetiva_atual:.1f}%).")
         _r2.metric("Produção simulada", f"{prod_simulada:.0f} kg/ha",
                    f"{delta_kg:+.0f} kg/ha")
         _r3.metric("Em sacas", f"{prod_simulada/60:.1f} sc/ha",
