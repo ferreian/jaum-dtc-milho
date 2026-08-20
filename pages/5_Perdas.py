@@ -2393,7 +2393,7 @@ Um híbrido que produziu **8.500 kg/ha** na média dos locais filtrados, com est
 | Acamamento | 1,1% | 15% | 0,17% |
 | Quebramento | 1,2% | 30% | 0,36% |
 | Dominadas | 5,8% | 20% | 1,16% |
-| Colmo podre | 3,9% | 5% | 0,19% |
+| Colmo podre | 3,9% | 5% | 0,20% |
 | **Total** | **12,0% das plantas** | | **1,9% da produção** |
 
 **Passo 1 — o potencial.** Os 8.500 kg/ha já são o que sobrou depois das perdas. Se 1,9% da
@@ -2482,7 +2482,20 @@ tudo na hora.
                     f"**{perda_efetiva_atual:.1f}%** de produção. "
                     f"Produção potencial sem perdas: **{potencial:.0f} kg/ha**.")
 
-        st.markdown("##### Ajuste as perdas e veja o efeito")
+        _c_tit, _c_reset = st.columns([4, 1])
+        _c_tit.markdown("##### Ajuste as perdas e veja o efeito")
+        # A CHAVE PRECISA DO HÍBRIDO. Com `key="sim_pct_dominadas"` fixo, o valor ficava no
+        # session_state e NÃO voltava ao medido ao trocar de híbrido: os sliders continuavam com
+        # o cenário do material anterior, e o simulador mostrava ganho "sem mexer em nada".
+        # Incluindo o híbrido (e o recorte de filtros) na chave, cada seleção começa no seu
+        # próprio valor medido.
+        _ctx_key = f"{hib_sim}|{len(g_sim)}"
+        if _c_reset.button("↺ Valores medidos", key=f"reset_sim_{_ctx_key}",
+                           help="Volta os quatro sliders para a média real do híbrido na rede."):
+            for _c in PERDAS.values():
+                st.session_state.pop(f"sim_{_c}_{_ctx_key}", None)
+            st.rerun()
+
         _cols_sim = st.columns(len(PERDAS))
         _novo_comp = {}
         for i, (nome, col) in enumerate(PERDAS.items()):
@@ -2490,7 +2503,7 @@ tudo na hora.
             _max_slider = float(max(10.0, np.ceil(atual * 1.5 / 5) * 5))
             _novo_comp[nome] = _cols_sim[i].slider(
                 f"{nome}", min_value=0.0, max_value=_max_slider,
-                value=float(atual), step=0.5, key=f"sim_{col}", format="%.1f%%",
+                value=float(atual), step=0.1, key=f"sim_{col}_{_ctx_key}", format="%.1f%%",
                 help=f"Percentual de perda por {nome.lower()}. Média na rede: {atual:.1f}%.")
 
         perda_total_nova = round(sum(_novo_comp.values()), 1)
@@ -2499,6 +2512,13 @@ tudo na hora.
         delta_kg = prod_simulada - prod_atual
         delta_sc = delta_kg / 60
         delta_pct = (delta_kg / prod_atual * 100) if prod_atual else 0
+
+        if abs(perda_total_nova - perda_total_atual) > 0.05:
+            st.caption(
+                f"Cenário montado por você: perda física de **{perda_total_nova:.1f}%** contra "
+                f"**{perda_total_atual:.1f}%** medidos na rede. O ganho abaixo é hipotético.")
+        else:
+            st.caption("Sliders nos valores medidos — sem cenário, o ganho é zero por definição.")
 
         st.markdown("##### Resultado")
         _r1, _r2, _r3 = st.columns(3)
